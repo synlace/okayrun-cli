@@ -1,6 +1,6 @@
 <h1 align="center">
-  <img src="assets/logo.svg" alt="Okay Run" width="48" style="vertical-align: middle;" />
-  <span style="vertical-align: middle; margin-left: 8px;">okay run</span>
+  <img src="assets/logo.svg" alt="Okay Run" width="48" align="absmiddle" />
+  okay run
 </h1>
 
 <p align="center">
