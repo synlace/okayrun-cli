@@ -1,7 +1,7 @@
 # okayrun-cli
 
 <p align="center">
-  <img src="assets/logo.png" alt="Okay Run" width="96" />
+  <img src="assets/logo.svg" alt="Okay Run" width="96" />
 </p>
 
 <p align="center">
