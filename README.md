@@ -1,8 +1,7 @@
-# okayrun-cli
-
-<p align="center">
-  <img src="assets/logo.svg" alt="Okay Run" width="96" />
-</p>
+<h1 align="center">
+  <img src="assets/logo.svg" alt="Okay Run" width="48" style="vertical-align: middle;" />
+  <span style="vertical-align: middle; margin-left: 8px;">okay run</span>
+</h1>
 
 <p align="center">
   <strong>Disposable VMs in ~3s, billed per second.</strong>
