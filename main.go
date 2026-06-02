@@ -23,8 +23,8 @@ import (
 )
 
 var (
-	APIBaseURL     = "http://localhost:8080"
-	WSBaseURL      = "ws://localhost:8080/v1"
+	APIBaseURL     = "https://okayrun.io"
+	WSBaseURL      = "wss://okayrun.io/v1"
 	ConfigFileName = ".okay.json"
 )
 
