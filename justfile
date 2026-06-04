@@ -1,6 +1,10 @@
 default:
 	@just --list
 
+# Build the OKAY RUN CLI binary
+build:
+	go build -o bin/okay .
+
 # Stage, commit, push, PR, and merge changes in one go (handles repos with PR-only rulesets)
 pr-land message branch_name="":
 	#!/usr/bin/env bash
