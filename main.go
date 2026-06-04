@@ -116,6 +116,13 @@ func main() {
 			return
 		}
 		handleStop(os.Args[2])
+	case "save":
+		if len(os.Args) < 4 {
+			fmt.Println("Error: Missing session ID or target snapshot name.")
+			fmt.Println("Usage: okay save <session-id> <new-image-name>")
+			return
+		}
+		handleSave(os.Args[2], os.Args[3])
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -135,6 +142,7 @@ Commands:
   list               List your currently active microVM sessions
   run <distro>       Provision and enter an interactive console session (alpine|ubuntu|debian|arch)
   stop <session-id>  Stop and terminate a running microVM session cleanly
+  save <id> <name>   Save a running microVM session's active disk as a custom image snapshot
   help               Show this manual page
 `)
 }
@@ -403,6 +411,47 @@ func handleStop(sessionID string) {
 
 	fmt.Printf("✓ Session %s stopped successfully.\n", sessionID)
 	fmt.Printf("Total Elapsed cost: $%.4f\n", s.TotalChargedCents/100.0)
+}
+
+// --- Save Command ---
+
+func handleSave(sessionID, name string) {
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Println("Error: You are not logged in. Please run: okay login")
+		return
+	}
+
+	fmt.Printf("[1/2] Syncing guest filesystem memory buffer...\n")
+	// Make request to API
+	url := fmt.Sprintf("%s/v1/sessions/%s/save?name=%s", APIBaseURL, sessionID, name)
+	req, _ := http.NewRequest("POST", url, nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+
+	fmt.Printf("[2/2] Creating copy-on-write snapshot disk...\n\n")
+
+	client := &http.Client{Timeout: 30 * time.Second} // Snapshots can take slightly longer
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error communicating with server: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errData map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errData)
+		if errData["error"] != "" {
+			fmt.Printf("Error: %s\n", errData["error"])
+		} else {
+			fmt.Printf("Error: Snapshot save failed with status code %d\n", resp.StatusCode)
+		}
+		return
+	}
+
+	fmt.Printf("✓ Snapshot '%s' saved successfully!\n", name)
+	fmt.Println("To run this environment again:")
+	fmt.Printf("  okay run %s\n", name)
 }
 
 // --- Terminal Bridge Seam & Implementation (Candidate 3) ---
