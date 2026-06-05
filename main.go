@@ -513,6 +513,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string) error {
 		var bootBuf string
 		isBooting := true
 		readyMarker := "===OKAYRUN_READY==="
+		bootStart := time.Now()
 
 		for {
 			_, msg, err := ws.ReadMessage()
@@ -530,7 +531,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string) error {
 					// We just booted! Stop buffering and write the flushed message.
 					_, _ = os.Stdout.Write([]byte(display))
 					bootBuf = "" // Clear memory
-				} else if len(bootBuf) > 512*1024 { // Fallback if no marker found in 512KB
+				} else if shouldExitBootMode(len(bootBuf), bootStart) {
 					isBooting = false
 					_, _ = os.Stdout.Write([]byte(bootBuf))
 					bootBuf = "" // Clear memory
@@ -671,6 +672,20 @@ func CleanBootOutput(buffer string, newData string, marker string) (string, bool
 		return afterMarker, true, ""
 	}
 	return "", false, updatedBuffer
+}
+
+// shouldExitBootMode returns true when the boot buffering phase should be abandoned
+// and raw output should be passed directly to the terminal. This prevents a permanent
+// hang when the VM boots successfully but never emits the OKAYRUN_READY marker (e.g.
+// because the image uses an unsupported init system or shell that does not source
+// the injected profile). Two conditions trigger exit:
+//   - bufSize exceeds 512 KB  (original safety net — plenty of kernel output)
+//   - bootTimeout has elapsed since bootStart (time-based safety net for quiet VMs)
+const bootTimeout = 30 * time.Second
+const bootSizeLimit = 512 * 1024
+
+func shouldExitBootMode(bufSize int, bootStart time.Time) bool {
+	return bufSize > bootSizeLimit || time.Since(bootStart) > bootTimeout
 }
 
 func isShellReady(output string) bool {

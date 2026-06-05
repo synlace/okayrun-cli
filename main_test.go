@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func TestCleanBootOutput(t *testing.T) {
@@ -41,4 +42,36 @@ func TestCleanBootOutput(t *testing.T) {
 			t.Errorf("expected empty buffer, got %q", buf)
 		}
 	})
+}
+
+func TestShouldExitBootMode_SizeThreshold(t *testing.T) {
+	recentStart := time.Now()
+
+	// Just under the limit — should NOT exit.
+	if shouldExitBootMode(bootSizeLimit, recentStart) {
+		t.Errorf("expected false when bufSize == bootSizeLimit and time is recent")
+	}
+
+	// One byte over — should exit.
+	if !shouldExitBootMode(bootSizeLimit+1, recentStart) {
+		t.Errorf("expected true when bufSize > bootSizeLimit")
+	}
+}
+
+func TestShouldExitBootMode_TimeTimeout(t *testing.T) {
+	// Simulate a boot that started well beyond the timeout.
+	expiredStart := time.Now().Add(-(bootTimeout + time.Second))
+
+	if !shouldExitBootMode(0, expiredStart) {
+		t.Errorf("expected true when boot start has exceeded bootTimeout")
+	}
+}
+
+func TestShouldExitBootMode_NotYet(t *testing.T) {
+	recentStart := time.Now()
+	smallBuf := 1024 // 1 KB
+
+	if shouldExitBootMode(smallBuf, recentStart) {
+		t.Errorf("expected false when buf is small and boot just started")
+	}
 }
