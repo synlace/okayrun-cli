@@ -540,14 +540,25 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool) err
 				isBooting = !isBooting // CleanBootOutput returns true if ready, so we invert it for isBooting
 				if !isBooting {
 					// We just booted! Stop buffering and write the flushed message.
+					display = strings.ReplaceAll(display, readyMarker, "")
 					_, _ = os.Stdout.Write([]byte(display))
 					bootBuf = "" // Clear memory
 				} else if shouldExitBootMode(len(bootBuf), bootStart) {
 					isBooting = false
-					_, _ = os.Stdout.Write([]byte(bootBuf))
+					cleanBuf := strings.ReplaceAll(bootBuf, readyMarker, "")
+					_, _ = os.Stdout.Write([]byte(cleanBuf))
 					bootBuf = "" // Clear memory
 				}
 			} else {
+				msgStr := string(msg)
+				if strings.Contains(msgStr, readyMarker) {
+					msgStr = strings.ReplaceAll(msgStr, readyMarker, "")
+					msgStr = strings.TrimPrefix(msgStr, "\r")
+					msgStr = strings.TrimPrefix(msgStr, "\n")
+					msgStr = strings.TrimPrefix(msgStr, "\r")
+					msgStr = strings.TrimPrefix(msgStr, "\n")
+					msg = []byte(msgStr)
+				}
 				_, _ = os.Stdout.Write(msg)
 			}
 		}
