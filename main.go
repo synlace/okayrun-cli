@@ -526,7 +526,11 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool) err
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
 				term.Restore(stdinFd, oldState)
-				fmt.Print("\r\n\r\n⚡ Session closed cleanly. Thank you!\r\n")
+				if closeErr, ok := err.(*websocket.CloseError); ok && closeErr.Text != "" {
+					fmt.Printf("\r\n⚡ %s\r\n", closeErr.Text)
+				} else {
+					fmt.Print("\r\n⚡ Session closed cleanly. Thank you!\r\n")
+				}
 				os.Exit(0)
 			}
 
