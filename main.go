@@ -360,6 +360,8 @@ type Session struct {
 	Distro            string    `json:"distro"`
 	Status            string    `json:"status"`
 	VMIP              string    `json:"vm_ip"`
+	VMIPv6            string    `json:"vm_ipv6"`
+	V6Domain          string    `json:"v6_domain"`
 	StartedAt         time.Time `json:"started_at"`
 	TotalChargedCents float64   `json:"total_charged_cents"`
 }
@@ -810,6 +812,9 @@ func handleRun(distro string, cmdArgs []string, verbose bool) {
 		fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
 		fmt.Printf("Session ID:  %s\n", s.ID)
 		fmt.Printf("Subnet IP:   %s\n", s.VMIP)
+		if s.V6Domain != "" {
+			fmt.Printf("v6 Domain:   %s\n", s.V6Domain)
+		}
 		fmt.Printf("Billing:     $0.01 / hour, billed dynamically per second\n")
 		fmt.Printf("Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
 		if verbose {
