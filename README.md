@@ -4,7 +4,7 @@
 </h1>
 
 <p align="center">
-  <strong>Disposable VMs in ~3s, billed per second.</strong>
+  <strong>Disposable VMs in less than 1s, billed per second.</strong>
 </p>
 
 <p align="center">
