@@ -104,17 +104,43 @@ func main() {
 		handleList()
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Println("Error: Missing distro argument.")
-			fmt.Println("Usage: okay run [--verbose] <distro> [command...]")
+			fmt.Println("Error: Missing distro or --compose argument.")
+			fmt.Println("Usage:")
+			fmt.Println("  okay run [--verbose] <distro> [command...]")
+			fmt.Println("  okay run [--verbose] --compose [compose-file-path]")
 			return
 		}
-		verbose, distro, cmdArgs := parseRunArgs(os.Args[2:])
-		if distro == "" {
-			fmt.Println("Error: Missing distro argument.")
-			fmt.Println("Usage: okay run [--verbose] <distro> [command...]")
-			return
+		// First detect if --compose is passed anywhere in the args
+		isCompose := false
+		for _, arg := range os.Args[2:] {
+			if arg == "--compose" {
+				isCompose = true
+				break
+			}
 		}
-		handleRun(distro, cmdArgs, verbose)
+
+		if isCompose {
+			verbose, _, composePath := parseComposeArgs(os.Args[2:])
+			if composePath == "" {
+				if _, err := os.Stat("docker-compose.yaml"); err == nil {
+					composePath = "docker-compose.yaml"
+				} else if _, err := os.Stat("docker-compose.yml"); err == nil {
+					composePath = "docker-compose.yml"
+				} else {
+					fmt.Println("Error: No docker-compose.yaml or docker-compose.yml file found in current directory.")
+					return
+				}
+			}
+			handleComposeRun(composePath, verbose)
+		} else {
+			verbose, distro, cmdArgs := parseRunArgs(os.Args[2:])
+			if distro == "" {
+				fmt.Println("Error: Missing distro argument.")
+				fmt.Println("Usage: okay run [--verbose] <distro> [command...]")
+				return
+			}
+			handleRun(distro, cmdArgs, verbose)
+		}
 	case "stop":
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing session ID argument.")
@@ -356,14 +382,17 @@ func handleBalance() {
 // --- List Command ---
 
 type Session struct {
-	ID                string    `json:"id"`
-	Distro            string    `json:"distro"`
-	Status            string    `json:"status"`
-	VMIP              string    `json:"vm_ip"`
-	VMIPv6            string    `json:"vm_ipv6"`
-	V6Domain          string    `json:"v6_domain"`
-	StartedAt         time.Time `json:"started_at"`
-	TotalChargedCents float64   `json:"total_charged_cents"`
+	ID                string            `json:"id"`
+	Distro            string            `json:"distro"`
+	Status            string            `json:"status"`
+	VMIP              string            `json:"vm_ip"`
+	VMIPv6            string            `json:"vm_ipv6"`
+	V6Domain          string            `json:"v6_domain"`
+	StartedAt         time.Time         `json:"started_at"`
+	TotalChargedCents float64           `json:"total_charged_cents"`
+	StackID           string            `json:"stack_id,omitempty"`
+	ServiceName       string            `json:"service_name,omitempty"`
+	Siblings          map[string]string `json:"siblings,omitempty"`
 }
 
 func handleList() {
