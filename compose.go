@@ -103,23 +103,7 @@ func TranslateImageToDistro(image string) string {
 	if image == "" {
 		return "alpine"
 	}
-
-	parts := strings.Split(image, "/")
-	base := parts[len(parts)-1]
-	if idx := strings.Index(base, ":"); idx != -1 {
-		base = base[:idx]
-	}
-
-	base = strings.ToLower(strings.TrimSpace(base))
-
-	knownDistros := []string{"alpine", "ubuntu", "debian", "arch", "fedora", "void", "rocky", "centos"}
-	for _, dist := range knownDistros {
-		if strings.Contains(base, dist) {
-			return base
-		}
-	}
-
-	return "alpine"
+	return image
 }
 
 func PackDirectoryToTarGz(dirPath string) ([]byte, error) {
@@ -274,6 +258,7 @@ func handleComposeRun(composePath string, verbose bool) {
 		fmt.Printf("Error preparing stack payload: %v\n", err)
 		return
 	}
+	fmt.Printf("DEBUG: JSON Payload: %s\n", string(body))
 
 	req, _ := http.NewRequest("POST", APIBaseURL+"/v1/sessions", bytes.NewBuffer(body))
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)

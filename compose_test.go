@@ -82,13 +82,13 @@ func TestTranslateImageToDistro(t *testing.T) {
 		image    string
 		expected string
 	}{
-		{"alpine:3.20", "alpine"},
-		{"ubuntu:latest", "ubuntu"},
+		{"alpine:3.20", "alpine:3.20"},
+		{"ubuntu:latest", "ubuntu:latest"},
 		{"debian", "debian"},
-		{"fedora:38", "fedora"},
-		{"nginx:latest", "alpine"},
-		{"redis", "alpine"},
-		{"mysql:8", "alpine"},
+		{"fedora:38", "fedora:38"},
+		{"nginx:latest", "nginx:latest"},
+		{"redis", "redis"},
+		{"mysql:8", "mysql:8"},
 		{"", "alpine"},
 	}
 
