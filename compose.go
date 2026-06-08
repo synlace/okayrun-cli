@@ -348,7 +348,25 @@ func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGro
 	defer wg.Done()
 
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
-	ws, _, err := dialer.Dial(wsURL, nil)
+	var ws *websocket.Conn
+	var err error
+
+	// Retry loop for the WebSocket connection to allow asynchronous VM provisioning
+	for attempt := 0; attempt < 30; attempt++ {
+		select {
+		case <-stopChan:
+			return
+		default:
+		}
+
+		ws, _, err = dialer.Dial(wsURL, nil)
+		if err == nil {
+			break
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	if err != nil {
 		fmt.Printf("%s[%s]%s Failed to stream logs: %v\n", color, serviceName, "\033[0m", err)
 		return
