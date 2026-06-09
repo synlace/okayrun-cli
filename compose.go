@@ -295,7 +295,7 @@ func handleComposeRun(composePath string, verbose bool) {
 
 	fmt.Printf("[3/3] Establishing console/log multiplexer for stack: %s\n\n", stackResp.StackID)
 	for _, s := range stackResp.Sessions {
-		fmt.Printf("  - Service: %-10s | Subnet IP: %-12s | ID: %s\n", s.ServiceName, s.VMIP, s.ID)
+		fmt.Printf("  - Service: %-10s | Subnet IP: %-30s | ID: %s\n", s.ServiceName, s.VMIPv6, s.ID)
 	}
 	fmt.Printf("\nPress Ctrl+C to stop all services and terminate the stack.\n\n")
 
@@ -733,15 +733,15 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 
 	if detach {
 		fmt.Printf("Spawning services in detached mode for stack: %s\n", stackResp.StackID)
-		for _, s := range stackResp.Sessions {
-			fmt.Printf("  - Service: %-10s | Subnet IP: %-12s | ID: %s\n", s.ServiceName, s.VMIP, s.ID)
-		}
+	for _, s := range stackResp.Sessions {
+		fmt.Printf("  - Service: %-10s | Subnet IP: %-30s | ID: %s\n", s.ServiceName, s.VMIPv6, s.ID)
+	}
 		return
 	}
 
 	fmt.Printf("[3/3] Establishing console/log multiplexer for stack: %s\n\n", stackResp.StackID)
 	for _, s := range stackResp.Sessions {
-		fmt.Printf("  - Service: %-10s | Subnet IP: %-12s | ID: %s\n", s.ServiceName, s.VMIP, s.ID)
+		fmt.Printf("  - Service: %-10s | Subnet IP: %-30s | ID: %s\n", s.ServiceName, s.VMIPv6, s.ID)
 	}
 	fmt.Printf("\nPress Ctrl+C to stop all services and terminate the stack.\n\n")
 

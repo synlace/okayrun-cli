@@ -428,10 +428,10 @@ func handleList() {
 		return
 	}
 
-	fmt.Printf("%-15s %-12s %-10s %-12s %-10s\n", "SESSION ID", "DISTRO", "STATUS", "IP ADDRESS", "CHARGED")
-	fmt.Println(strings.Repeat("-", 65))
+	fmt.Printf("%-15s %-12s %-10s %-30s %-10s\n", "SESSION ID", "DISTRO", "STATUS", "IP ADDRESS", "CHARGED")
+	fmt.Println(strings.Repeat("-", 83))
 	for _, s := range sessions {
-		fmt.Printf("%-15s %-12s %-10s %-12s $%.4f\n", s.ID, s.Distro, s.Status, s.VMIP, s.TotalChargedCents/100.0)
+		fmt.Printf("%-15s %-12s %-10s %-30s $%.4f\n", s.ID, s.Distro, s.Status, s.VMIPv6, s.TotalChargedCents/100.0)
 	}
 }
 
@@ -848,7 +848,7 @@ func handleRun(distro string, cmdArgs []string, verbose bool) {
 	if isInteractive {
 		fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
 		fmt.Printf("Session ID:  %s\n", s.ID)
-		fmt.Printf("Subnet IP:   %s\n", s.VMIP)
+		fmt.Printf("Subnet IP:   %s\n", s.VMIPv6)
 		if s.V6Domain != "" {
 			fmt.Printf("v6 Domain:   %s\n", s.V6Domain)
 		}
