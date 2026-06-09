@@ -221,3 +221,51 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		t.Errorf("expected Email = 'test@user.io', got %q", cfg.Email)
 	}
 }
+
+func TestParsePSArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		expected bool
+	}{
+		{
+			name:     "No flags",
+			args:     []string{},
+			expected: false,
+		},
+		{
+			name:     "Some other positional args",
+			args:     []string{"foo", "bar"},
+			expected: false,
+		},
+		{
+			name:     "With -a flag",
+			args:     []string{"-a"},
+			expected: true,
+		},
+		{
+			name:     "With --all flag",
+			args:     []string{"--all"},
+			expected: true,
+		},
+		{
+			name:     "With mixed arguments and -a flag",
+			args:     []string{"foo", "-a", "bar"},
+			expected: true,
+		},
+		{
+			name:     "With mixed arguments and --all flag",
+			args:     []string{"foo", "bar", "--all"},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := parsePSArgs(tt.args)
+			if res != tt.expected {
+				t.Errorf("expected %v, got %v for args %v", tt.expected, res, tt.args)
+			}
+		})
+	}
+}

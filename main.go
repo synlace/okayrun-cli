@@ -106,8 +106,8 @@ func main() {
 		handleLoginFlow()
 	case "balance":
 		handleBalance()
-	case "list":
-		handleList()
+	case "ps":
+		handlePS(parsePSArgs(os.Args[2:]))
 	case "run":
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing distro or --compose argument.")
@@ -186,7 +186,7 @@ Commands:
   login              Trigger secure web browser authentication loop (recommended)
   auth <token>       Manually save an authentication token (JWT)
   balance            Display your available credit balance
-  list               List your currently active microVM sessions
+  ps                 List your microVM sessions (use -a to show terminated)
   compose            Docker Compose compatibility layer (up|down|logs)
   run <distro>       Provision and enter an interactive console session (alpine|ubuntu|debian|arch|fedora|void...)
   run --verbose      Show raw boot console output instead of suppressing it (useful for diagnostics)
@@ -402,7 +402,7 @@ type Session struct {
 	Siblings          map[string]string `json:"siblings,omitempty"`
 }
 
-func handleList() {
+func handlePS(all bool) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
@@ -423,14 +423,25 @@ func handleList() {
 	var sessions []Session
 	_ = json.NewDecoder(resp.Body).Decode(&sessions)
 
-	if len(sessions) == 0 {
+	var displayed []Session
+	if all {
+		displayed = sessions
+	} else {
+		for _, s := range sessions {
+			if s.Status == "RUNNING" || s.Status == "PROVISIONING" {
+				displayed = append(displayed, s)
+			}
+		}
+	}
+
+	if len(displayed) == 0 {
 		fmt.Println("No active microVM sessions found.")
 		return
 	}
 
 	fmt.Printf("%-15s %-12s %-10s %-30s %-10s\n", "SESSION ID", "DISTRO", "STATUS", "IP ADDRESS", "CHARGED")
 	fmt.Println(strings.Repeat("-", 83))
-	for _, s := range sessions {
+	for _, s := range displayed {
 		fmt.Printf("%-15s %-12s %-10s %-30s $%.4f\n", s.ID, s.Distro, s.Status, s.VMIPv6, s.TotalChargedCents/100.0)
 	}
 }
@@ -742,6 +753,16 @@ func parseRunArgs(args []string) (verbose bool, ports []string, distro string, c
 		cmdArgs = positional[1:]
 	}
 	return
+}
+
+// parsePSArgs parses the arguments after "ps" to see if the -a or --all flag is passed.
+func parsePSArgs(args []string) bool {
+	for _, arg := range args {
+		if arg == "-a" || arg == "--all" {
+			return true
+		}
+	}
+	return false
 }
 
 // CleanBootOutput buffers the VM's console output until the ready marker is found.

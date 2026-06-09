@@ -143,7 +143,7 @@ logout
 | **login** | `okay login` | Launches the secure web browser OAuth authentication flow. |
 | **auth** | `okay auth <token>` | Saves an authentication token manually in `~/.okay.json`. |
 | **balance** | `okay balance` | Displays your active account email and current credits balance. |
-| **list** | `okay list` | Lists all of your currently running active microVM sessions. |
+| **ps** | `okay ps` | Lists all of your microVM sessions (use `-a` to show terminated). |
 | **run** | `okay run <distro> [command...]` | Spawns and logs into a microVM (supports `alpine`, `ubuntu`, `debian`, `arch`). |
 | **stop** | `okay stop <session-id>` | Cleanly shuts down and terminates an active microVM session. |
 | **help** | `okay help` | Displays the terminal help guide and usage instructions. |
