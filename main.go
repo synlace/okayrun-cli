@@ -89,6 +89,12 @@ func main() {
 	switch cmd {
 	case "help":
 		printUsage()
+	case "compose":
+		if len(os.Args) < 3 {
+			printComposeUsage()
+			return
+		}
+		handleCompose(os.Args[2:])
 	case "auth":
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing token argument.")
@@ -181,6 +187,7 @@ Commands:
   auth <token>       Manually save an authentication token (JWT)
   balance            Display your available credit balance
   list               List your currently active microVM sessions
+  compose            Docker Compose compatibility layer (up|down|logs)
   run <distro>       Provision and enter an interactive console session (alpine|ubuntu|debian|arch|fedora|void...)
   run --verbose      Show raw boot console output instead of suppressing it (useful for diagnostics)
   stop <session-id>  Stop and terminate a running microVM session cleanly

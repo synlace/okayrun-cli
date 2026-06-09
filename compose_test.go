@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -123,5 +124,60 @@ func TestPackDirectoryToTarGz(t *testing.T) {
 
 	if len(data) == 0 {
 		t.Errorf("expected non-empty gzip data")
+	}
+}
+
+func TestSanitizeStackID(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"MyProject", "myproject"},
+		{"proj-name_123", "proj-name_123"},
+		{"proj.name space", "proj_name_space"},
+		{"!@#abc$%^", "abc"},
+		{"", "stack"},
+	}
+
+	for _, tc := range tests {
+		got := sanitizeStackID(tc.input)
+		if got != tc.expected {
+			t.Errorf("sanitizeStackID(%q) = %q; expected %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestGetStackID_Override(t *testing.T) {
+	// 1. Explicit override
+	got := getStackID("CustomProj")
+	if got != "customproj" {
+		t.Errorf("expected customproj, got %q", got)
+	}
+
+	// 2. Env variable override
+	os.Setenv("COMPOSE_PROJECT_NAME", "EnvProj")
+	defer os.Unsetenv("COMPOSE_PROJECT_NAME")
+
+	got2 := getStackID("")
+	if got2 != "envproj" {
+		t.Errorf("expected envproj, got %q", got2)
+	}
+}
+
+func TestGetStackID_Default(t *testing.T) {
+	// Without override or env, it should include directory name and an 8-char hash
+	got := getStackID("")
+	if got == "" || got == "stack" {
+		t.Errorf("expected non-empty default stack ID, got %q", got)
+	}
+
+	// It should contain an underscore separating the name and hash
+	if !strings.Contains(got, "_") {
+		t.Errorf("expected stack ID to contain underscore, got %q", got)
+	}
+
+	parts := strings.Split(got, "_")
+	if len(parts[len(parts)-1]) != 8 {
+		t.Errorf("expected stable hash suffix of length 8, got %q", parts[len(parts)-1])
 	}
 }
