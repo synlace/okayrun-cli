@@ -79,9 +79,12 @@ func TestShouldExitBootMode_NotYet(t *testing.T) {
 }
 
 func TestParseRunArgs_NoFlag(t *testing.T) {
-	verbose, distro, cmdArgs := parseRunArgs([]string{"fedora"})
+	verbose, ports, distro, cmdArgs := parseRunArgs([]string{"fedora"})
 	if verbose {
 		t.Errorf("expected verbose=false, got true")
+	}
+	if len(ports) != 0 {
+		t.Errorf("expected empty ports, got %v", ports)
 	}
 	if distro != "fedora" {
 		t.Errorf("expected distro=%q, got %q", "fedora", distro)
@@ -92,9 +95,12 @@ func TestParseRunArgs_NoFlag(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
-	verbose, distro, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
+	verbose, ports, distro, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
+	}
+	if len(ports) != 0 {
+		t.Errorf("expected empty ports, got %v", ports)
 	}
 	if distro != "fedora" {
 		t.Errorf("expected distro=%q, got %q", "fedora", distro)
@@ -105,9 +111,12 @@ func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
-	verbose, distro, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
+	verbose, ports, distro, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
+	}
+	if len(ports) != 0 {
+		t.Errorf("expected empty ports, got %v", ports)
 	}
 	if distro != "fedora" {
 		t.Errorf("expected distro=%q, got %q", "fedora", distro)
@@ -118,15 +127,48 @@ func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseWithCommand(t *testing.T) {
-	verbose, distro, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
+	verbose, ports, distro, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
+	}
+	if len(ports) != 0 {
+		t.Errorf("expected empty ports, got %v", ports)
 	}
 	if distro != "fedora" {
 		t.Errorf("expected distro=%q, got %q", "fedora", distro)
 	}
 	if len(cmdArgs) != 1 || cmdArgs[0] != "echo hi" {
 		t.Errorf("expected cmdArgs=[\"echo hi\"], got %v", cmdArgs)
+	}
+}
+
+func TestParseRunArgs_PublishFlags(t *testing.T) {
+	tests := []struct {
+		args          []string
+		expectedPorts []string
+		expectedDist  string
+	}{
+		{[]string{"-p", "3000:3000", "fedora"}, []string{"3000:3000"}, "fedora"},
+		{[]string{"-p3000:3000", "fedora"}, []string{"3000:3000"}, "fedora"},
+		{[]string{"--publish", "80:80", "fedora"}, []string{"80:80"}, "fedora"},
+		{[]string{"--publish=8080:8080", "fedora"}, []string{"8080:8080"}, "fedora"},
+		{[]string{"-p", "80:80", "-p", "443:443", "nginx"}, []string{"80:80", "443:443"}, "nginx"},
+	}
+
+	for _, tc := range tests {
+		_, ports, distro, _ := parseRunArgs(tc.args)
+		if distro != tc.expectedDist {
+			t.Errorf("for args %v: expected distro %q, got %q", tc.args, tc.expectedDist, distro)
+		}
+		if len(ports) != len(tc.expectedPorts) {
+			t.Errorf("for args %v: expected ports %v, got %v", tc.args, tc.expectedPorts, ports)
+		} else {
+			for i, p := range ports {
+				if p != tc.expectedPorts[i] {
+					t.Errorf("for args %v: expected port[%d]=%q, got %q", tc.args, i, tc.expectedPorts[i], p)
+				}
+			}
+		}
 	}
 }
 

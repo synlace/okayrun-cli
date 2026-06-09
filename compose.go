@@ -84,9 +84,10 @@ type StackSpawnRequest struct {
 }
 
 type StackServicePayload struct {
-	Name     string `json:"name"`
-	Distro   string `json:"distro"`
-	DiskSize string `json:"disk_size,omitempty"`
+	Name     string   `json:"name"`
+	Distro   string   `json:"distro"`
+	DiskSize string   `json:"disk_size,omitempty"`
+	Ports    []string `json:"ports,omitempty"`
 }
 
 func ParseComposeFile(path string) (*ComposeFile, error) {
@@ -256,6 +257,7 @@ func handleComposeRun(composePath string, verbose bool) {
 			Name:     name,
 			Distro:   dist,
 			DiskSize: svc.DiskSize,
+			Ports:    svc.Ports,
 		})
 	}
 

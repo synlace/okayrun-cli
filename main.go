@@ -139,13 +139,13 @@ func main() {
 			}
 			handleComposeRun(composePath, verbose)
 		} else {
-			verbose, distro, cmdArgs := parseRunArgs(os.Args[2:])
+			verbose, ports, distro, cmdArgs := parseRunArgs(os.Args[2:])
 			if distro == "" {
 				fmt.Println("Error: Missing distro argument.")
-				fmt.Println("Usage: okay run [--verbose] <distro> [command...]")
+				fmt.Println("Usage: okay run [--verbose] [-p/--publish <port>] <distro> [command...]")
 				return
 			}
-			handleRun(distro, cmdArgs, verbose)
+			handleRun(distro, cmdArgs, verbose, ports)
 		}
 	case "stop":
 		if len(os.Args) < 3 {
@@ -718,11 +718,21 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string) error {
 // parseRunArgs splits the os.Args slice passed after "run" into its components.
 // A --verbose flag appearing anywhere in args is extracted; the first remaining
 // positional argument is the distro; any remaining arguments are cmdArgs.
-func parseRunArgs(args []string) (verbose bool, distro string, cmdArgs []string) {
+func parseRunArgs(args []string) (verbose bool, ports []string, distro string, cmdArgs []string) {
 	var positional []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if a == "--verbose" {
 			verbose = true
+		} else if a == "-p" || a == "--publish" {
+			if i+1 < len(args) {
+				ports = append(ports, args[i+1])
+				i++
+			}
+		} else if strings.HasPrefix(a, "-p") && len(a) > 2 {
+			ports = append(ports, a[2:])
+		} else if strings.HasPrefix(a, "--publish=") {
+			ports = append(ports, strings.TrimPrefix(a, "--publish="))
 		} else {
 			positional = append(positional, a)
 		}
@@ -780,7 +790,7 @@ var termBridge TerminalBridge = &RawOSTerminalBridge{}
 
 // --- Run Command (Terminal Raw WebSocket connection) ---
 
-func handleRun(distro string, cmdArgs []string, verbose bool) {
+func handleRun(distro string, cmdArgs []string, verbose bool, ports []string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
@@ -822,7 +832,17 @@ func handleRun(distro string, cmdArgs []string, verbose bool) {
 	if isInteractive {
 		fmt.Printf("[2/3] Requesting dynamic microVM spawn... (%s rootfs overlay)\n", distro)
 	}
-	body := []byte(fmt.Sprintf(`{"distro":"%s"}`, distro))
+	payload := map[string]interface{}{
+		"distro": distro,
+	}
+	if len(ports) > 0 {
+		payload["ports"] = ports
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Printf("Error encoding request body: %v\n", err)
+		return
+	}
 	req, _ := http.NewRequest("POST", APIBaseURL+"/v1/sessions", bytes.NewBuffer(body))
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
