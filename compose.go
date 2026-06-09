@@ -68,6 +68,7 @@ type ComposeService struct {
 	DependsOn   DependsOnList `yaml:"depends_on"`
 	Environment EnvList       `yaml:"environment"`
 	Volumes     []string      `yaml:"volumes"`
+	DiskSize    string        `yaml:"x-okay-disk,omitempty"`
 }
 
 type ComposeFile struct {
@@ -81,8 +82,9 @@ type StackSpawnRequest struct {
 }
 
 type StackServicePayload struct {
-	Name   string `json:"name"`
-	Distro string `json:"distro"`
+	Name     string `json:"name"`
+	Distro   string `json:"distro"`
+	DiskSize string `json:"disk_size,omitempty"`
 }
 
 func ParseComposeFile(path string) (*ComposeFile, error) {
@@ -248,8 +250,9 @@ func handleComposeRun(composePath string, verbose bool) {
 	for name, svc := range comp.Services {
 		dist := TranslateImageToDistro(svc.Image)
 		payload.Services = append(payload.Services, StackServicePayload{
-			Name:   name,
-			Distro: dist,
+			Name:     name,
+			Distro:   dist,
+			DiskSize: svc.DiskSize,
 		})
 	}
 
