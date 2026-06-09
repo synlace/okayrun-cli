@@ -629,6 +629,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 	}()
 
 	buf := make([]byte, 256)
+	var lastCtrlC time.Time
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
@@ -638,6 +639,20 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 			continue
 		}
 		if n > 0 {
+			if n == 1 && buf[0] == 3 {
+				now := time.Now()
+				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) < 1*time.Second {
+					term.Restore(stdinFd, oldState)
+					_ = ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Hard interrupt close"))
+					fmt.Println("\nHard exit triggered. Terminating session.")
+					terminateSession(sessionID, token)
+					os.Exit(0)
+				}
+				lastCtrlC = now
+			} else {
+				lastCtrlC = time.Time{}
+			}
+
 			err = ws.WriteMessage(websocket.BinaryMessage, buf[:n])
 			if err != nil {
 				break
