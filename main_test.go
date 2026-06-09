@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -267,5 +269,37 @@ func TestParsePSArgs(t *testing.T) {
 				t.Errorf("expected %v, got %v for args %v", tt.expected, res, tt.args)
 			}
 		})
+	}
+}
+
+func TestTerminateSession(t *testing.T) {
+	var receivedMethod string
+	var receivedURL string
+	var receivedAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedMethod = r.Method
+		receivedURL = r.URL.String()
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	originalAPIBaseURL := APIBaseURL
+	APIBaseURL = srv.URL
+	defer func() {
+		APIBaseURL = originalAPIBaseURL
+	}()
+
+	terminateSession("test-session-id", "test-token")
+
+	if receivedMethod != "DELETE" {
+		t.Errorf("expected Method DELETE, got %q", receivedMethod)
+	}
+	if receivedURL != "/v1/sessions/test-session-id" {
+		t.Errorf("expected URL /v1/sessions/test-session-id, got %q", receivedURL)
+	}
+	if receivedAuth != "Bearer test-token" {
+		t.Errorf("expected Authorization header 'Bearer test-token', got %q", receivedAuth)
 	}
 }

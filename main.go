@@ -524,13 +524,27 @@ func handleSave(sessionID, name string) {
 // --- Terminal Bridge Seam & Implementation (Candidate 3) ---
 
 type TerminalBridge interface {
-	ConnectInteractive(wsURL string, verbose bool) error
-	ExecuteCommand(wsURL, commandStr string) error
+	ConnectInteractive(wsURL string, verbose bool, token, sessionID string) error
+	ExecuteCommand(wsURL, commandStr string, token, sessionID string) error
 }
 
 type RawOSTerminalBridge struct{}
 
-func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool) error {
+func terminateSession(sessionID, token string) {
+	req, err := http.NewRequest("DELETE", fmt.Sprintf("%s/v1/sessions/%s", APIBaseURL, sessionID), nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
+func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, token, sessionID string) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	ws, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
@@ -558,6 +572,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool) err
 					term.Restore(stdinFd, oldState)
 					_ = ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Hard interrupt close"))
 					fmt.Println("\nHard exit triggered. Terminating session.")
+					terminateSession(sessionID, token)
 					os.Exit(0)
 				}
 				_ = ws.WriteMessage(websocket.BinaryMessage, []byte{3})
@@ -635,7 +650,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool) err
 	return nil
 }
 
-func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string) error {
+func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, sessionID string) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	ws, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
@@ -647,6 +662,20 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string) error {
 	commandSent := false
 	var mu sync.Mutex
 	done := make(chan struct{})
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		select {
+		case <-sigChan:
+			fmt.Println("\n⚡ Interrupt detected! Terminating remote session...")
+			terminateSession(sessionID, token)
+			os.Exit(1)
+		case <-done:
+			// Normal execution completed
+		}
+	}()
 
 	go func() {
 		for {
@@ -901,13 +930,13 @@ func handleRun(distro string, cmdArgs []string, verbose bool, ports []string) {
 		fmt.Printf("⚡ MicroVM booting...\n\n")
 
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		err = termBridge.ConnectInteractive(wsURL, verbose)
+		err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID)
 		if err != nil {
 			fmt.Println(err)
 		}
 	} else {
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		err = termBridge.ExecuteCommand(wsURL, strings.Join(cmdArgs, " "))
+		err = termBridge.ExecuteCommand(wsURL, strings.Join(cmdArgs, " "), cfg.Token, s.ID)
 		if err != nil {
 			fmt.Println(err)
 		}
