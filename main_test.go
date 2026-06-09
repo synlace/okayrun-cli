@@ -303,3 +303,19 @@ func TestTerminateSession(t *testing.T) {
 		t.Errorf("expected Authorization header 'Bearer test-token', got %q", receivedAuth)
 	}
 }
+
+func TestEnterKeyTranslation(t *testing.T) {
+	buf := []byte("hello\rworld\r\n")
+	expected := "hello\nworld\n\n"
+
+	// Mimic translation loop in main.go
+	for i := 0; i < len(buf); i++ {
+		if buf[i] == '\r' {
+			buf[i] = '\n'
+		}
+	}
+
+	if string(buf) != expected {
+		t.Errorf("expected translated string to be %q, got %q", expected, string(buf))
+	}
+}

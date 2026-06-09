@@ -607,11 +607,23 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 					display = strings.ReplaceAll(display, readyMarker, "")
 					_, _ = os.Stdout.Write([]byte(display))
 					bootBuf = "" // Clear memory
+
+					// Send terminal resize command to guest VM
+					if w, h, err := term.GetSize(stdinFd); err == nil {
+						resizeCmd := fmt.Sprintf(" stty cols %d rows %d && clear\r", w, h)
+						_ = ws.WriteMessage(websocket.BinaryMessage, []byte(resizeCmd))
+					}
 				} else if shouldExitBootMode(len(bootBuf), bootStart) {
 					isBooting = false
 					cleanBuf := strings.ReplaceAll(bootBuf, readyMarker, "")
 					_, _ = os.Stdout.Write([]byte(cleanBuf))
 					bootBuf = "" // Clear memory
+
+					// Send terminal resize command to guest VM
+					if w, h, err := term.GetSize(stdinFd); err == nil {
+						resizeCmd := fmt.Sprintf(" stty cols %d rows %d && clear\r", w, h)
+						_ = ws.WriteMessage(websocket.BinaryMessage, []byte(resizeCmd))
+					}
 				}
 			} else {
 				msgStr := string(msg)
@@ -651,6 +663,14 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 				lastCtrlC = now
 			} else {
 				lastCtrlC = time.Time{}
+			}
+
+			// Translate carriage return (\r) to newline (\n) to ensure Enter key reliability
+			// even when guest TTY line discipline (icrnl) is disabled or lost.
+			for i := 0; i < n; i++ {
+				if buf[i] == '\r' {
+					buf[i] = '\n'
+				}
 			}
 
 			err = ws.WriteMessage(websocket.BinaryMessage, buf[:n])
