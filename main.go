@@ -827,7 +827,8 @@ func handleRun(distro string, cmdArgs []string, verbose bool) {
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	spawnClient := &http.Client{Timeout: 120 * time.Second}
+	resp, err := spawnClient.Do(req)
 	if err != nil {
 		fmt.Printf("Error running VM: %v\n", err)
 		return
