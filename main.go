@@ -629,6 +629,12 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 				}
 			} else {
 				msgStr := string(msg)
+				if strings.Contains(msgStr, "Kernel panic") || strings.Contains(msgStr, "Rebooting in ") || strings.Contains(msgStr, "/sbin/init:") || strings.Contains(msgStr, "Attempted to kill init") {
+					term.Restore(stdinFd, oldState)
+					fmt.Print("\r\n\r\n⚡ Session closed cleanly. Thank you!\r\n")
+					os.Exit(0)
+				}
+
 				if strings.Contains(msgStr, readyMarker) {
 					msgStr = strings.ReplaceAll(msgStr, readyMarker, "")
 					msgStr = strings.TrimPrefix(msgStr, "\r")
