@@ -610,8 +610,9 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 
 					// Send terminal resize command to guest VM
 					if w, h, err := term.GetSize(stdinFd); err == nil {
-						resizeCmd := fmt.Sprintf(" stty cols %d rows %d && clear\r", w, h)
+						resizeCmd := fmt.Sprintf(" stty cols %d rows %d 2>/dev/null\r", w, h)
 						_ = ws.WriteMessage(websocket.BinaryMessage, []byte(resizeCmd))
+						_, _ = os.Stdout.Write([]byte("\033[H\033[2J")) // ANSI clear screen
 					}
 				} else if shouldExitBootMode(len(bootBuf), bootStart) {
 					isBooting = false
@@ -621,8 +622,9 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 
 					// Send terminal resize command to guest VM
 					if w, h, err := term.GetSize(stdinFd); err == nil {
-						resizeCmd := fmt.Sprintf(" stty cols %d rows %d && clear\r", w, h)
+						resizeCmd := fmt.Sprintf(" stty cols %d rows %d 2>/dev/null\r", w, h)
 						_ = ws.WriteMessage(websocket.BinaryMessage, []byte(resizeCmd))
+						_, _ = os.Stdout.Write([]byte("\033[H\033[2J")) // ANSI clear screen
 					}
 				}
 			} else {
