@@ -735,9 +735,9 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 
 	if detach {
 		fmt.Printf("Spawning services in detached mode for stack: %s\n", stackResp.StackID)
-	for _, s := range stackResp.Sessions {
-		fmt.Printf("  - Service: %-10s | Subnet IP: %-30s | ID: %s\n", s.ServiceName, s.VMIPv6, s.ID)
-	}
+		for _, s := range stackResp.Sessions {
+			fmt.Printf("  - Service: %-10s | Subnet IP: %-30s | ID: %s\n", s.ServiceName, s.VMIPv6, s.ID)
+		}
 		return
 	}
 

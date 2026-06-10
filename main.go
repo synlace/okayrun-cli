@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -552,6 +553,8 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 	}
 	defer ws.Close()
 
+	wsConn := &WSConn{conn: ws}
+
 	stdinFd := int(syscall.Stdin)
 	oldState, err := term.MakeRaw(stdinFd)
 	if err != nil {
@@ -559,143 +562,82 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 	}
 	defer term.Restore(stdinFd, oldState)
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		interruptCount := 0
-		for {
-			select {
-			case <-sigChan:
-				interruptCount++
-				if interruptCount >= 2 {
-					term.Restore(stdinFd, oldState)
-					_ = ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Hard interrupt close"))
-					fmt.Println("\nHard exit triggered. Terminating session.")
-					terminateSession(sessionID, token)
-					os.Exit(0)
-				}
-				_ = ws.WriteMessage(websocket.BinaryMessage, []byte{3})
-			}
-		}
-	}()
-
-	go func() {
-		var bootBuf string
-		isBooting := !verbose // in verbose mode, never enter boot-buffering; stream everything directly
-		readyMarker := "===OKAYRUN_READY==="
-		bootStart := time.Now()
-
-		for {
-			_, msg, err := ws.ReadMessage()
-			if err != nil {
-				term.Restore(stdinFd, oldState)
-				if closeErr, ok := err.(*websocket.CloseError); ok && closeErr.Text != "" {
-					fmt.Printf("\r\n⚡ %s\r\n", closeErr.Text)
-				} else {
-					fmt.Print("\r\n⚡ Session closed cleanly. Thank you!\r\n")
-				}
-				os.Exit(0)
-			}
-
-			if isBooting {
-				var display string
-				display, isBooting, bootBuf = CleanBootOutput(bootBuf, string(msg), readyMarker)
-				isBooting = !isBooting // CleanBootOutput returns true if ready, so we invert it for isBooting
-				if !isBooting {
-					// We just booted! Stop buffering and write the flushed message.
-					display = strings.ReplaceAll(display, readyMarker, "")
-					_, _ = os.Stdout.Write([]byte(display))
-					bootBuf = "" // Clear memory
-
-					// Send terminal resize command to guest VM
-					if w, h, err := term.GetSize(stdinFd); err == nil {
-						resizeCmd := fmt.Sprintf(" stty cols %d rows %d 2>/dev/null\r", w, h)
-						_ = ws.WriteMessage(websocket.BinaryMessage, []byte(resizeCmd))
-						go func() {
-							time.Sleep(150 * time.Millisecond)
-							_, _ = os.Stdout.Write([]byte("\033[H\033[2J")) // ANSI clear screen
-						}()
-					}
-				} else if shouldExitBootMode(len(bootBuf), bootStart) {
-					isBooting = false
-					cleanBuf := strings.ReplaceAll(bootBuf, readyMarker, "")
-					_, _ = os.Stdout.Write([]byte(cleanBuf))
-					bootBuf = "" // Clear memory
-
-					// Send terminal resize command to guest VM
-					if w, h, err := term.GetSize(stdinFd); err == nil {
-						resizeCmd := fmt.Sprintf(" stty cols %d rows %d 2>/dev/null\r", w, h)
-						_ = ws.WriteMessage(websocket.BinaryMessage, []byte(resizeCmd))
-						go func() {
-							time.Sleep(150 * time.Millisecond)
-							_, _ = os.Stdout.Write([]byte("\033[H\033[2J")) // ANSI clear screen
-						}()
-					}
-				}
-			} else {
-				msgStr := string(msg)
-				if strings.Contains(msgStr, "Kernel panic") || strings.Contains(msgStr, "Rebooting in ") || strings.Contains(msgStr, "/sbin/init:") || strings.Contains(msgStr, "Attempted to kill init") {
-					term.Restore(stdinFd, oldState)
-					fmt.Print("\r\n\r\n⚡ Session closed cleanly. Thank you!\r\n")
-					os.Exit(0)
-				}
-
-				if strings.Contains(msgStr, readyMarker) {
-					msgStr = strings.ReplaceAll(msgStr, readyMarker, "")
-					msgStr = strings.TrimPrefix(msgStr, "\r")
-					msgStr = strings.TrimPrefix(msgStr, "\n")
-					msgStr = strings.TrimPrefix(msgStr, "\r")
-					msgStr = strings.TrimPrefix(msgStr, "\n")
-					msg = []byte(msgStr)
-				}
-				_, _ = os.Stdout.Write(msg)
-			}
-		}
-	}()
-
-	buf := make([]byte, 256)
-	var lastCtrlC time.Time
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			continue
-		}
-		if n > 0 {
-			if n == 1 && buf[0] == 3 {
-				now := time.Now()
-				if !lastCtrlC.IsZero() && now.Sub(lastCtrlC) < 1*time.Second {
-					term.Restore(stdinFd, oldState)
-					_ = ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Hard interrupt close"))
-					fmt.Println("\nHard exit triggered. Terminating session.")
-					terminateSession(sessionID, token)
-					os.Exit(0)
-				}
-				lastCtrlC = now
-			} else {
-				lastCtrlC = time.Time{}
-			}
-
-			// Translate carriage return (\r) to newline (\n) to ensure Enter key reliability
-			// even when guest TTY line discipline (icrnl) is disabled or lost.
-			for i := 0; i < n; i++ {
-				if buf[i] == '\r' {
-					buf[i] = '\n'
-				}
-			}
-
-			err = ws.WriteMessage(websocket.BinaryMessage, buf[:n])
-			if err != nil {
-				break
-			}
-		}
+	sshConfig := &ssh.ClientConfig{
+		User: "root",
+		Auth: []ssh.AuthMethod{
+			ssh.Password(""),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
 	}
 
-	term.Restore(stdinFd, oldState)
-	fmt.Print("\r\n\r\n⚡ Session closed cleanly. Thank you!\r\n")
+	conn, chans, reqs, err := ssh.NewClientConn(wsConn, "localhost:22", sshConfig)
+	if err != nil {
+		return fmt.Errorf("ssh handshake failed: %v", err)
+	}
+	defer conn.Close()
+
+	client := ssh.NewClient(conn, chans, reqs)
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create ssh session: %v", err)
+	}
+	defer session.Close()
+
+	w, h, err := term.GetSize(stdinFd)
+	if err != nil {
+		w, h = 80, 24
+	}
+
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+
+	termEnv := os.Getenv("TERM")
+	if termEnv == "" {
+		termEnv = "xterm-256color"
+	}
+
+	if err := session.RequestPty(termEnv, h, w, modes); err != nil {
+		return fmt.Errorf("failed to request pty: %v", err)
+	}
+
+	stdinWrapper := &SSHStdinWrapper{
+		reader: os.Stdin,
+		onHardExit: func() {
+			term.Restore(stdinFd, oldState)
+			fmt.Println("\nHard exit triggered. Terminating session.")
+			terminateSession(sessionID, token)
+			os.Exit(0)
+		},
+	}
+
+	session.Stdin = stdinWrapper
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	sigWin := make(chan os.Signal, 1)
+	signal.Notify(sigWin, syscall.SIGWINCH)
+	go func() {
+		for range sigWin {
+			if nw, nh, err := term.GetSize(stdinFd); err == nil {
+				_ = session.WindowChange(nh, nw)
+			}
+		}
+	}()
+	defer func() {
+		signal.Stop(sigWin)
+	}()
+
+	if err := session.Shell(); err != nil {
+		return fmt.Errorf("failed to start shell: %v", err)
+	}
+
+	_ = session.Wait()
 	return nil
 }
 
@@ -707,11 +649,18 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, se
 	}
 	defer ws.Close()
 
-	var outputBuf bytes.Buffer
-	commandSent := false
-	var mu sync.Mutex
-	done := make(chan struct{})
+	wsConn := &WSConn{conn: ws}
 
+	sshConfig := &ssh.ClientConfig{
+		User: "root",
+		Auth: []ssh.AuthMethod{
+			ssh.Password(""),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	}
+
+	done := make(chan struct{})
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -725,80 +674,31 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, se
 			// Normal execution completed
 		}
 	}()
-
-	go func() {
-		for {
-			_, msg, err := ws.ReadMessage()
-			if err != nil {
-				close(done)
-				return
-			}
-
-			mu.Lock()
-			outputBuf.Write(msg)
-
-			if commandSent {
-				fullOutput := outputBuf.String()
-				if strings.Contains(fullOutput, "OKAY_CMD_START") && strings.Contains(fullOutput, "OKAY_CMD_END") {
-					startIndex := strings.Index(fullOutput, "OKAY_CMD_START")
-					endIndex := strings.Index(fullOutput, "OKAY_CMD_END")
-					if startIndex != -1 && endIndex > startIndex {
-						content := fullOutput[startIndex+len("OKAY_CMD_START") : endIndex]
-						content = strings.TrimPrefix(content, "\r")
-						content = strings.TrimPrefix(content, "\n")
-						content = strings.TrimPrefix(content, "\r")
-						content = strings.TrimPrefix(content, "\n")
-						content = strings.TrimSuffix(content, "\n")
-						content = strings.TrimSuffix(content, "\r")
-						content = strings.TrimSuffix(content, "\n")
-						content = strings.TrimSuffix(content, "\r")
-
-						fmt.Println(content)
-						os.Exit(0)
-					}
-				}
-			}
-			mu.Unlock()
-		}
+	defer func() {
+		close(done)
+		signal.Stop(sigChan)
 	}()
 
-	_ = ws.WriteMessage(websocket.BinaryMessage, []byte("\n"))
-
-	startTime := time.Now()
-	for {
-		if time.Since(startTime) > 15000*time.Millisecond {
-			break
-		}
-
-		mu.Lock()
-		ready := isShellReady(outputBuf.String())
-		mu.Unlock()
-
-		if ready {
-			time.Sleep(100 * time.Millisecond)
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
+	conn, chans, reqs, err := ssh.NewClientConn(wsConn, "localhost:22", sshConfig)
+	if err != nil {
+		return fmt.Errorf("ssh handshake failed: %v", err)
 	}
+	defer conn.Close()
 
-	mu.Lock()
-	commandSent = true
-	outputBuf.Reset()
-	mu.Unlock()
+	client := ssh.NewClient(conn, chans, reqs)
+	defer client.Close()
 
-	payload := fmt.Sprintf("\necho 'OKAY_CMD_S''TART'; %s; echo 'OKAY_CMD_E''ND'\nexit\n", commandStr)
-	_ = ws.WriteMessage(websocket.BinaryMessage, []byte(payload))
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create ssh session: %v", err)
+	}
+	defer session.Close()
 
-	select {
-	case <-done:
-		mu.Lock()
-		content := outputBuf.String()
-		mu.Unlock()
-		if len(content) > 0 {
-			fmt.Print(content)
-		}
-	case <-time.After(15 * time.Second):
-		return fmt.Errorf("Error: Command timed out after 15 seconds.")
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	if err := session.Run(commandStr); err != nil {
+		return fmt.Errorf("failed to run command: %v", err)
 	}
 
 	return nil
@@ -843,46 +743,101 @@ func parsePSArgs(args []string) bool {
 	return false
 }
 
-// CleanBootOutput buffers the VM's console output until the ready marker is found.
-// It returns:
-// - the output that should be displayed (if any)
-// - a boolean indicating if the ready marker has been matched and booting is complete
-// - the updated buffered string
-func CleanBootOutput(buffer string, newData string, marker string) (string, bool, string) {
-	updatedBuffer := buffer + newData
-	if idx := strings.Index(updatedBuffer, marker); idx != -1 {
-		afterMarker := updatedBuffer[idx+len(marker):]
-		// Strip any leading newlines/carriage returns
-		afterMarker = strings.TrimPrefix(afterMarker, "\r")
-		afterMarker = strings.TrimPrefix(afterMarker, "\n")
-		afterMarker = strings.TrimPrefix(afterMarker, "\r")
-		afterMarker = strings.TrimPrefix(afterMarker, "\n")
-		return afterMarker, true, ""
-	}
-	return "", false, updatedBuffer
+type WSConn struct {
+	conn   *websocket.Conn
+	mu     sync.Mutex
+	reader io.Reader
 }
 
-// shouldExitBootMode returns true when the boot buffering phase should be abandoned
-// and raw output should be passed directly to the terminal. This prevents a permanent
-// hang when the VM boots successfully but never emits the OKAYRUN_READY marker (e.g.
-// because the image uses an unsupported init system or shell that does not source
-// the injected profile). Two conditions trigger exit:
-//   - bufSize exceeds 512 KB  (original safety net — plenty of kernel output)
-//   - bootTimeout has elapsed since bootStart (time-based safety net for quiet VMs)
-const bootTimeout = 30 * time.Second
-const bootSizeLimit = 512 * 1024
+func (c *WSConn) Read(b []byte) (n int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-func shouldExitBootMode(bufSize int, bootStart time.Time) bool {
-	return bufSize > bootSizeLimit || time.Since(bootStart) > bootTimeout
+	for {
+		if c.reader == nil {
+			mt, r, err := c.conn.NextReader()
+			if err != nil {
+				return 0, err
+			}
+			if mt != websocket.BinaryMessage && mt != websocket.TextMessage {
+				continue
+			}
+			c.reader = r
+		}
+
+		n, err = c.reader.Read(b)
+		if err == io.EOF {
+			c.reader = nil
+			if n == 0 {
+				continue
+			}
+			return n, nil
+		}
+		return n, err
+	}
 }
 
-func isShellReady(output string) bool {
-	idx := strings.LastIndex(output, "firecracker-")
-	if idx == -1 {
-		return false
+func (c *WSConn) Write(b []byte) (n int, err error) {
+	err = c.conn.WriteMessage(websocket.BinaryMessage, b)
+	if err != nil {
+		return 0, err
 	}
-	suffix := output[idx:]
-	return strings.Contains(suffix, "#") || strings.Contains(suffix, "$")
+	return len(b), nil
+}
+
+func (c *WSConn) Close() error {
+	return c.conn.Close()
+}
+
+func (c *WSConn) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c *WSConn) RemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
+}
+
+func (c *WSConn) SetDeadline(t time.Time) error {
+	_ = c.conn.SetReadDeadline(t)
+	return c.conn.SetWriteDeadline(t)
+}
+
+func (c *WSConn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+func (c *WSConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
+}
+
+type SSHStdinWrapper struct {
+	reader     io.Reader
+	mu         sync.Mutex
+	lastCtrlC  time.Time
+	onHardExit func()
+}
+
+func (s *SSHStdinWrapper) Read(p []byte) (n int, err error) {
+	n, err = s.reader.Read(p)
+	if err != nil {
+		return n, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := 0; i < n; i++ {
+		if p[i] == 3 { // Ctrl+C
+			now := time.Now()
+			if !s.lastCtrlC.IsZero() && now.Sub(s.lastCtrlC) < 1*time.Second {
+				if s.onHardExit != nil {
+					s.onHardExit()
+				}
+			}
+			s.lastCtrlC = now
+		} else {
+			s.lastCtrlC = time.Time{}
+		}
+	}
+	return n, nil
 }
 
 var termBridge TerminalBridge = &RawOSTerminalBridge{}
