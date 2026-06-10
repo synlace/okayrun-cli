@@ -110,9 +110,9 @@ func main() {
 		handlePS(parsePSArgs(os.Args[2:]))
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Println("Error: Missing distro or --compose argument.")
+			fmt.Println("Error: Missing image or --compose argument.")
 			fmt.Println("Usage:")
-			fmt.Println("  okay run [--verbose] <distro> [command...]")
+			fmt.Println("  okay run [--verbose] <image> [command...]")
 			fmt.Println("  okay run [--verbose] --compose [compose-file-path]")
 			return
 		}
@@ -139,13 +139,13 @@ func main() {
 			}
 			handleComposeRun(composePath, verbose)
 		} else {
-			verbose, ports, distro, cmdArgs := parseRunArgs(os.Args[2:])
-			if distro == "" {
-				fmt.Println("Error: Missing distro argument.")
-				fmt.Println("Usage: okay run [--verbose] [-p/--publish <port>] <distro> [command...]")
+			verbose, ports, image, cmdArgs := parseRunArgs(os.Args[2:])
+			if image == "" {
+				fmt.Println("Error: Missing image argument.")
+				fmt.Println("Usage: okay run [--verbose] [-p/--publish <port>] <image> [command...]")
 				return
 			}
-			handleRun(distro, cmdArgs, verbose, ports)
+			handleRun(image, cmdArgs, verbose, ports)
 		}
 	case "stop":
 		if len(os.Args) < 3 {
@@ -188,7 +188,7 @@ Commands:
   balance            Display your available credit balance
   ps                 List your microVM sessions (use -a to show terminated)
   compose            Docker Compose compatibility layer (up|down|logs)
-  run <distro>       Provision and enter an interactive console session (alpine|ubuntu|debian|arch|fedora|void...)
+  run <image>        Provision and enter an interactive console session (alpine|ubuntu|debian|arch|fedora|void...)
   run --verbose      Show raw boot console output instead of suppressing it (useful for diagnostics)
   stop <session-id>  Stop and terminate a running microVM session cleanly
   save <id> <name>   Save a running microVM session's active disk as a custom image snapshot
@@ -390,7 +390,7 @@ func handleBalance() {
 
 type Session struct {
 	ID                string            `json:"id"`
-	Distro            string            `json:"distro"`
+	Image             string            `json:"image"`
 	Status            string            `json:"status"`
 	VMIP              string            `json:"vm_ip"`
 	VMIPv6            string            `json:"vm_ipv6"`
@@ -439,10 +439,10 @@ func handlePS(all bool) {
 		return
 	}
 
-	fmt.Printf("%-15s %-12s %-10s %-30s %-10s\n", "SESSION ID", "DISTRO", "STATUS", "IP ADDRESS", "CHARGED")
+	fmt.Printf("%-15s %-12s %-10s %-30s %-10s\n", "SESSION ID", "IMAGE", "STATUS", "IP ADDRESS", "CHARGED")
 	fmt.Println(strings.Repeat("-", 83))
 	for _, s := range displayed {
-		fmt.Printf("%-15s %-12s %-10s %-30s $%.4f\n", s.ID, s.Distro, s.Status, s.VMIPv6, s.TotalChargedCents/100.0)
+		fmt.Printf("%-15s %-12s %-10s %-30s $%.4f\n", s.ID, s.Image, s.Status, s.VMIPv6, s.TotalChargedCents/100.0)
 	}
 }
 
@@ -792,8 +792,8 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, se
 
 // parseRunArgs splits the os.Args slice passed after "run" into its components.
 // A --verbose flag appearing anywhere in args is extracted; the first remaining
-// positional argument is the distro; any remaining arguments are cmdArgs.
-func parseRunArgs(args []string) (verbose bool, ports []string, distro string, cmdArgs []string) {
+// positional argument is the image; any remaining arguments are cmdArgs.
+func parseRunArgs(args []string) (verbose bool, ports []string, image string, cmdArgs []string) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -813,7 +813,7 @@ func parseRunArgs(args []string) (verbose bool, ports []string, distro string, c
 		}
 	}
 	if len(positional) > 0 {
-		distro = positional[0]
+		image = positional[0]
 		cmdArgs = positional[1:]
 	}
 	return
@@ -875,7 +875,7 @@ var termBridge TerminalBridge = &RawOSTerminalBridge{}
 
 // --- Run Command (Terminal Raw WebSocket connection) ---
 
-func handleRun(distro string, cmdArgs []string, verbose bool, ports []string) {
+func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
@@ -915,10 +915,10 @@ func handleRun(distro string, cmdArgs []string, verbose bool, ports []string) {
 	}
 
 	if isInteractive {
-		fmt.Printf("[2/3] Requesting dynamic microVM spawn... (%s rootfs overlay)\n", distro)
+		fmt.Printf("[2/3] Requesting dynamic microVM spawn... (%s rootfs overlay)\n", image)
 	}
 	payload := map[string]interface{}{
-		"distro": distro,
+		"image": image,
 	}
 	if len(ports) > 0 {
 		payload["ports"] = ports
