@@ -85,7 +85,7 @@ type StackSpawnRequest struct {
 
 type StackServicePayload struct {
 	Name     string   `json:"name"`
-	Distro   string   `json:"distro"`
+	Image    string   `json:"image"`
 	DiskSize string   `json:"disk_size,omitempty"`
 	Ports    []string `json:"ports,omitempty"`
 }
@@ -252,10 +252,10 @@ func handleComposeRun(composePath string, verbose bool) {
 	fmt.Printf("[2/3] Translating and spawning multi-VM orchestrator stack...\n")
 	var payload StackSpawnRequest
 	for name, svc := range comp.Services {
-		dist := TranslateImageToDistro(svc.Image)
+		img := TranslateImageToDistro(svc.Image)
 		payload.Services = append(payload.Services, StackServicePayload{
 			Name:     name,
-			Distro:   dist,
+			Image:    img,
 			DiskSize: svc.DiskSize,
 			Ports:    svc.Ports,
 		})
@@ -691,10 +691,10 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	var payload StackSpawnRequest
 	payload.StackID = stackID
 	for name, svc := range comp.Services {
-		dist := TranslateImageToDistro(svc.Image)
+		img := TranslateImageToDistro(svc.Image)
 		payload.Services = append(payload.Services, StackServicePayload{
 			Name:     name,
-			Distro:   dist,
+			Image:    img,
 			DiskSize: svc.DiskSize,
 		})
 	}
