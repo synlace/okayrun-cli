@@ -557,8 +557,11 @@ func terminateSession(sessionID, token string) {
 
 func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, token, sessionID string, entrypoint, cmd []string) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
-	ws, _, err := dialer.Dial(wsURL, nil)
+	ws, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
+		if resp != nil {
+			return fmt.Errorf("Error opening terminal socket bridge: websocket handshake failed (HTTP %d %s)", resp.StatusCode, resp.Status)
+		}
 		return fmt.Errorf("Error opening terminal socket bridge: %v", err)
 	}
 	defer ws.Close()
@@ -676,8 +679,11 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 
 func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, sessionID string) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
-	ws, _, err := dialer.Dial(wsURL, nil)
+	ws, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
+		if resp != nil {
+			return fmt.Errorf("Error opening terminal socket bridge: websocket handshake failed (HTTP %d %s)", resp.StatusCode, resp.Status)
+		}
 		return fmt.Errorf("Error opening terminal socket bridge: %v", err)
 	}
 	defer ws.Close()
