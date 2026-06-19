@@ -703,6 +703,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 			Name:     name,
 			Image:    img,
 			DiskSize: svc.DiskSize,
+			Ports:    svc.Ports,
 		})
 	}
 
