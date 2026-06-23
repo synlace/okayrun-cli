@@ -140,13 +140,13 @@ func main() {
 			}
 			handleComposeRun(composePath, verbose)
 		} else {
-			verbose, ports, image, cmdArgs := parseRunArgs(os.Args[2:])
+			verbose, ports, memory, cpus, disk, image, cmdArgs := parseRunArgs(os.Args[2:])
 			if image == "" {
 				fmt.Println("Error: Missing image argument.")
-				fmt.Println("Usage: okay run [--verbose] [-p/--publish <port>] <image> [command...]")
+				fmt.Println("Usage: okay run [--verbose] [-p/--publish <port>] [--memory <size>] [--cpus <count>] [--disk <size>] <image> [command...]")
 				return
 			}
-			handleRun(image, cmdArgs, verbose, ports)
+			handleRun(image, cmdArgs, verbose, ports, memory, cpus, disk)
 		}
 	case "stop":
 		if len(os.Args) < 3 {
@@ -186,6 +186,73 @@ func main() {
 	}
 }
 
+// parseMemoryMB parses a memory string like "2g", "512m", "1024" to MB.
+func parseMemoryMB(s string) int {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var val int
+	var unit string
+	for i, c := range s {
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		for _, ch := range s[:i] {
+			if ch >= '0' && ch <= '9' {
+				val = val*10 + int(ch-'0')
+			}
+		}
+		unit = s[i:]
+		break
+	}
+	if val == 0 {
+		val = 512
+	}
+	switch unit {
+	case "g", "gb":
+		return val * 1024
+	case "m", "mb", "":
+		return val
+	default:
+		return val
+	}
+}
+
+// calculateHourlyRate computes the hourly cost in cents based on resource specs.
+func calculateHourlyRate(vcpus, memoryMB int, diskSize string) float64 {
+	diskGB := parseDiskSizeGB(diskSize)
+	rate := float64(vcpus)*0.005 + (float64(memoryMB)/256.0)*0.002 + float64(diskGB)*0.001
+	return rate * 100
+}
+
+// parseDiskSizeGB parses a disk size string like "4G" or "512M" to GB.
+func parseDiskSizeGB(diskSize string) float64 {
+	if diskSize == "" {
+		return 1.0
+	}
+	var val float64
+	var unit string
+	for i, c := range diskSize {
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		for _, ch := range diskSize[:i] {
+			if ch >= '0' && ch <= '9' {
+				val = val*10 + float64(ch-'0')
+			}
+		}
+		unit = diskSize[i:]
+		break
+	}
+	if val == 0 {
+		val = 1
+	}
+	switch unit {
+	case "M", "m":
+		return val / 1024.0
+	default:
+		return val
+	}
+}
+
 func printUsage() {
 	fmt.Print(`⚡ OKAY RUN - Ephemeral Firecracker microVM CLI Tool
  
@@ -206,6 +273,17 @@ Commands:
   images             List your base and custom virtual machine images
   rmi <name>         Remove a custom image snapshot
   help               Show this manual page
+
+Resource Flags (for 'run'):
+  --memory, -m <size>  Memory limit (e.g., 512m, 2g). Default: 512m
+  --cpus <count>       Number of CPUs (e.g., 1, 2, 4). Default: 1
+  --disk <size>        Disk size (e.g., 1g, 10g). Default: 1g
+
+Examples:
+  okay run ubuntu                           # Default: 1 CPU, 512MB, 1G
+  okay run ubuntu --memory 2g               # 1 CPU, 2GB, 1G
+  okay run ubuntu --cpus 2 --memory 4g      # 2 CPUs, 4GB, 1G
+  okay run ubuntu --cpus 2 --memory 4g --disk 10g
 `)
 }
 
@@ -822,7 +900,7 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, se
 // parseRunArgs splits the os.Args slice passed after "run" into its components.
 // A --verbose flag appearing anywhere in args is extracted; the first remaining
 // positional argument is the image; any remaining arguments are cmdArgs.
-func parseRunArgs(args []string) (verbose bool, ports []string, image string, cmdArgs []string) {
+func parseRunArgs(args []string) (verbose bool, ports []string, memory string, cpus int, disk string, image string, cmdArgs []string) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -837,6 +915,27 @@ func parseRunArgs(args []string) (verbose bool, ports []string, image string, cm
 			ports = append(ports, a[2:])
 		} else if strings.HasPrefix(a, "--publish=") {
 			ports = append(ports, strings.TrimPrefix(a, "--publish="))
+		} else if a == "--memory" || a == "-m" {
+			if i+1 < len(args) {
+				memory = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(a, "--memory=") {
+			memory = strings.TrimPrefix(a, "--memory=")
+		} else if a == "--cpus" {
+			if i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &cpus)
+				i++
+			}
+		} else if strings.HasPrefix(a, "--cpus=") {
+			fmt.Sscanf(strings.TrimPrefix(a, "--cpus="), "%d", &cpus)
+		} else if a == "--disk" {
+			if i+1 < len(args) {
+				disk = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(a, "--disk=") {
+			disk = strings.TrimPrefix(a, "--disk=")
 		} else {
 			positional = append(positional, a)
 		}
@@ -999,7 +1098,7 @@ func hasIPv6() bool {
 	return false
 }
 
-func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
+func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
@@ -1053,6 +1152,15 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 	if len(ports) > 0 {
 		payload["ports"] = ports
 	}
+	if memory != "" {
+		payload["memory"] = parseMemoryMB(memory)
+	}
+	if cpus > 0 {
+		payload["vcpus"] = cpus
+	}
+	if disk != "" {
+		payload["disk_size"] = disk
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Printf("Error encoding request body: %v\n", err)
@@ -1085,7 +1193,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 		fmt.Printf("Session ID:  %s\n", s.ID)
 		fmt.Printf("Domain:      %s\n", s.V6Domain)
 		fmt.Printf("Subnet IP:   %s\n", s.VMIPv6)
-		fmt.Printf("Billing:     $0.01 / hour, billed dynamically per second\n")
+		fmt.Printf("Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
 		fmt.Printf("Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
 		if verbose {
 			fmt.Printf("(verbose boot mode: raw console output enabled)\n\n")
