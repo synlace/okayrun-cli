@@ -84,6 +84,7 @@ type ComposeService struct {
 	Environment EnvList       `yaml:"environment"`
 	Volumes     []string      `yaml:"volumes"`
 	DiskSize    string        `yaml:"x-okay-disk,omitempty"`
+	Hypervisor  string        `yaml:"x-okay-hypervisor,omitempty"`
 }
 
 type ComposeFile struct {
@@ -97,10 +98,11 @@ type StackSpawnRequest struct {
 }
 
 type StackServicePayload struct {
-	Name     string   `json:"name"`
-	Image    string   `json:"image"`
-	DiskSize string   `json:"disk_size,omitempty"`
-	Ports    []string `json:"ports,omitempty"`
+	Name       string   `json:"name"`
+	Image      string   `json:"image"`
+	DiskSize   string   `json:"disk_size,omitempty"`
+	Ports      []string `json:"ports,omitempty"`
+	Hypervisor string   `json:"hypervisor,omitempty"`
 }
 
 func ParseComposeFile(path string) (*ComposeFile, error) {
@@ -267,10 +269,11 @@ func handleComposeRun(composePath string, verbose bool) {
 	for name, svc := range comp.Services {
 		img := TranslateImageToDistro(svc.Image)
 		payload.Services = append(payload.Services, StackServicePayload{
-			Name:     name,
-			Image:    img,
-			DiskSize: svc.DiskSize,
-			Ports:    svc.Ports,
+			Name:       name,
+			Image:      img,
+			DiskSize:   svc.DiskSize,
+			Ports:      svc.Ports,
+			Hypervisor: svc.Hypervisor,
 		})
 	}
 
@@ -306,6 +309,12 @@ func handleComposeRun(composePath string, verbose bool) {
 	if err := json.NewDecoder(resp.Body).Decode(&stackResp); err != nil {
 		fmt.Printf("Error decoding response: %v\n", err)
 		return
+	}
+
+	// Save server-generated stack_id for subsequent commands (down, logs)
+	projectName := getStackID("")
+	if err := saveStackIDToFile(projectName, stackResp.StackID); err != nil {
+		fmt.Printf("Warning: failed to save stack ID to %s: %v\n", okayStackFile, err)
 	}
 
 	fmt.Printf("[3/3] Establishing console/log multiplexer for stack: %s\n\n", stackResp.StackID)
@@ -474,6 +483,44 @@ Commands:
 `)
 }
 
+const okayStackFile = ".okay-stack"
+
+// loadOkayStack reads the .okay-stack JSON file and returns the map of project -> stack_id.
+func loadOkayStack() map[string]string {
+	data, err := os.ReadFile(okayStackFile)
+	if err != nil {
+		return make(map[string]string)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return make(map[string]string)
+	}
+	return m
+}
+
+// saveOkayStack writes the .okay-stack JSON file.
+func saveOkayStack(m map[string]string) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(okayStackFile, data, 0644)
+}
+
+// getStackIDFromFile reads the stack_id for a project from .okay-stack.
+// Returns empty string if not found.
+func getStackIDFromFile(projectName string) string {
+	m := loadOkayStack()
+	return m[projectName]
+}
+
+// saveStackIDToFile saves a stack_id for a project to .okay-stack.
+func saveStackIDToFile(projectName, stackID string) error {
+	m := loadOkayStack()
+	m[projectName] = stackID
+	return saveOkayStack(m)
+}
+
 func sanitizeStackID(s string) string {
 	s = strings.ToLower(s)
 	var sb strings.Builder
@@ -640,8 +687,6 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		return
 	}
 
-	stackID := getStackID(projectName)
-
 	// Volumes packaging step
 	for name, svc := range comp.Services {
 		for _, vol := range svc.Volumes {
@@ -700,14 +745,14 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 
 	fmt.Printf("[2/3] Translating and spawning multi-VM orchestrator stack...\n")
 	var payload StackSpawnRequest
-	payload.StackID = stackID
 	for name, svc := range comp.Services {
 		img := TranslateImageToDistro(svc.Image)
 		payload.Services = append(payload.Services, StackServicePayload{
-			Name:     name,
-			Image:    img,
-			DiskSize: svc.DiskSize,
-			Ports:    svc.Ports,
+			Name:       name,
+			Image:      img,
+			DiskSize:   svc.DiskSize,
+			Ports:      svc.Ports,
+			Hypervisor: svc.Hypervisor,
 		})
 	}
 
@@ -743,6 +788,11 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	if err := json.NewDecoder(resp.Body).Decode(&stackResp); err != nil {
 		fmt.Printf("Error decoding response: %v\n", err)
 		return
+	}
+
+	// Save server-generated stack_id for subsequent commands (down, logs)
+	if err := saveStackIDToFile(projectName, stackResp.StackID); err != nil {
+		fmt.Printf("Warning: failed to save stack ID to %s: %v\n", okayStackFile, err)
 	}
 
 	if detach {
@@ -847,7 +897,11 @@ func handleComposeDown(projectName string, subArgs []string) {
 		return
 	}
 
-	stackID := getStackID(projectName)
+	stackID := getStackIDFromFile(projectName)
+	if stackID == "" {
+		// Fallback to local computation for backward compat with existing stacks
+		stackID = getStackID(projectName)
+	}
 	fmt.Printf("Stopping all services for stack: %s...\n", stackID)
 
 	sessions, err := fetchActiveSessions(cfg.Token)
@@ -906,7 +960,11 @@ func handleComposeLogs(projectName string, subArgs []string) {
 		return
 	}
 
-	stackID := getStackID(projectName)
+	stackID := getStackIDFromFile(projectName)
+	if stackID == "" {
+		// Fallback to local computation for backward compat with existing stacks
+		stackID = getStackID(projectName)
+	}
 
 	sessions, err := fetchActiveSessions(cfg.Token)
 	if err != nil {
