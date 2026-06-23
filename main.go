@@ -152,8 +152,10 @@ func main() {
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing session ID argument.")
 			fmt.Println("Usage: okay stop <session-id>")
+			fmt.Println("Note: 'okay stop' is deprecated. Use 'okay compose down' for new workflows.")
 			return
 		}
+		fmt.Println("Note: 'okay stop' is deprecated. Use 'okay compose down' for new workflows.")
 		handleStop(os.Args[2])
 	case "exec":
 		if len(os.Args) < 3 {
@@ -199,7 +201,7 @@ Commands:
   run <image>        Provision and enter an interactive console session (alpine|ubuntu|debian|arch|fedora|void...)
   run --verbose      Show raw boot console output instead of suppressing it (useful for diagnostics)
   exec <id> [cmd...] Spawn a concurrent SSH shell or command inside a running microVM
-  stop <session-id>  Stop and terminate a running microVM session cleanly
+  stop <session-id>  [DEPRECATED] Stop and terminate a running microVM session (use 'compose down' instead)
   save <id> <name>   Save a running microVM session's active disk as a custom image snapshot
   images             List your base and custom virtual machine images
   rmi <name>         Remove a custom image snapshot
@@ -450,10 +452,14 @@ func handlePS(all bool) {
 		return
 	}
 
-	fmt.Printf("%-15s %-12s %-10s %-30s %-10s\n", "SESSION ID", "IMAGE", "STATUS", "IP ADDRESS", "CHARGED")
-	fmt.Println(strings.Repeat("-", 83))
+	fmt.Printf("%-15s %-12s %-10s %-40s %-10s\n", "SESSION ID", "NAME", "STATUS", "DOMAIN", "CHARGED")
+	fmt.Println(strings.Repeat("-", 93))
 	for _, s := range displayed {
-		fmt.Printf("%-15s %-12s %-10s %-30s $%.4f\n", s.ID, s.Image, s.Status, s.VMIPv6, s.TotalChargedCents/100.0)
+		name := s.ServiceName
+		if name == "" {
+			name = s.Image
+		}
+		fmt.Printf("%-15s %-12s %-10s %-40s $%.4f\n", s.ID, name, s.Status, s.V6Domain, s.TotalChargedCents/100.0)
 	}
 }
 
@@ -890,6 +896,21 @@ var termBridge TerminalBridge = &RawOSTerminalBridge{}
 
 // --- Run Command (Terminal Raw WebSocket connection) ---
 
+// deriveServiceName extracts a human-readable service name from a Docker image name.
+// e.g. "bkimminich/juice-shop" -> "juice-shop", "nginx" -> "nginx", "ubuntu:24.04" -> "ubuntu"
+func deriveServiceName(image string) string {
+	name := image
+	// Strip tag (e.g. "nginx:latest" -> "nginx")
+	if idx := strings.Index(name, ":"); idx != -1 {
+		name = name[:idx]
+	}
+	// Take last segment (e.g. "bkimminich/juice-shop" -> "juice-shop")
+	if idx := strings.LastIndex(name, "/"); idx != -1 {
+		name = name[idx+1:]
+	}
+	return name
+}
+
 func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -935,6 +956,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 	}
 	payload := map[string]interface{}{
 		"image": image,
+		"name":  deriveServiceName(image),
 	}
 	if len(ports) > 0 {
 		payload["ports"] = ports
@@ -969,10 +991,8 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 	if isInteractive {
 		fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
 		fmt.Printf("Session ID:  %s\n", s.ID)
+		fmt.Printf("Domain:      %s\n", s.V6Domain)
 		fmt.Printf("Subnet IP:   %s\n", s.VMIPv6)
-		if s.V6Domain != "" {
-			fmt.Printf("v6 Domain:   %s\n", s.V6Domain)
-		}
 		fmt.Printf("Billing:     $0.01 / hour, billed dynamically per second\n")
 		fmt.Printf("Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
 		if verbose {
