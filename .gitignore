@@ -4,3 +4,5 @@ okay
 
 # Test Logs
 logs/
+docker-compose.yaml
+okayrun-cli
