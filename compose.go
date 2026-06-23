@@ -694,6 +694,10 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		return
 	}
 
+	if !hasIPv6() {
+		fmt.Println("[1/3] Warning: No IPv6 detected on this system. okayrun.net domains are IPv6-only and may not be accessible from your connection. SSH via CLI will still work.")
+	}
+
 	fmt.Printf("[2/3] Translating and spawning multi-VM orchestrator stack...\n")
 	var payload StackSpawnRequest
 	payload.StackID = stackID

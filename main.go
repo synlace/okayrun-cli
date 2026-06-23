@@ -911,6 +911,31 @@ func deriveServiceName(image string) string {
 	return name
 }
 
+// hasIPv6 checks if any active non-loopback interface has a global unicast IPv6 address.
+func hasIPv6() bool {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipNet.IP
+			if ip.To4() == nil && !ip.IsLinkLocalUnicast() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -949,6 +974,10 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string) {
 		fmt.Println("Error: Insufficient balance. Please open the web console and add credits first!")
 		fmt.Printf("Dashboard: %s\n", APIBaseURL)
 		return
+	}
+
+	if isInteractive && !hasIPv6() {
+		fmt.Println("[1/3] Warning: No IPv6 detected on this system. okayrun.net domains are IPv6-only and may not be accessible from your connection. SSH via CLI will still work.")
 	}
 
 	if isInteractive {
