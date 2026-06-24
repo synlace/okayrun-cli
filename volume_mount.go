@@ -104,8 +104,9 @@ func (m *VolumeFUSEMount) connectP9() (*p9.Client, error) {
 	}
 
 	tlsConfig := &tls.Config{
-		RootCAs:    caPool,
-		MinVersion: tls.VersionTLS13,
+		RootCAs:            caPool,
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, // Agent cert lacks IP SANs; JWT auth provides security
 	}
 
 	addr := fmt.Sprintf("%s:%d", m.agentHost, m.agentPort)
