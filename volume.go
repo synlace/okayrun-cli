@@ -208,11 +208,40 @@ func handleVolumeMount(id, path string, rw bool) {
 
 	fmt.Printf("  ✓ Mounting %s (%s) at %s\n", vol.ID, vol.Name, path)
 	fmt.Printf("  ✓ Mode: %s\n", mode)
-	fmt.Printf("  ✓ FUSE tunnel established (latency: 0.8ms)\n")
+
+	// Mount via FUSE
+	agentURL := APIBaseURL
+	if err := MountVolume(vol.ID, path, agentURL, cfg.Token); err != nil {
+		fmt.Printf("  ✗ Failed to mount: %v\n", err)
+		return
+	}
+
+	fmt.Printf("  ✓ FUSE mount established\n")
 	fmt.Printf("  ✓ Ready. Run 'okay volume unmount %s' when done.\n", path)
 }
 
 func handleVolumeUnmount(path string) {
+	// Find the volume ID for this mount point
+	activeMountsMu.Lock()
+	var volumeID string
+	for id, mount := range activeMounts {
+		if mount.mountPoint == path {
+			volumeID = id
+			break
+		}
+	}
+	activeMountsMu.Unlock()
+
+	if volumeID == "" {
+		fmt.Printf("  ✗ No volume mounted at %s\n", path)
+		return
+	}
+
+	if err := UnmountVolume(volumeID); err != nil {
+		fmt.Printf("  ✗ Failed to unmount: %v\n", err)
+		return
+	}
+
 	fmt.Printf("  ✓ Unmounted %s\n", path)
 }
 
