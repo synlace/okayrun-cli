@@ -49,25 +49,29 @@ func (m *VolumeFUSEMount) Mount() error {
 	}
 	m.conn = c
 
+	go m.runFUSE()
+
+	log.Printf("[Volume FUSE] Mounted volume %s at %s", m.volumeID, m.mountPoint)
+	return nil
+}
+
+// runFUSE starts the FUSE server and blocks until it stops
+func (m *VolumeFUSEMount) runFUSE() error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Volume FUSE] PANIC: %v", r)
+		}
+	}()
+
 	filesys := &webdavFS{
 		baseURL:  m.baseURL,
 		username: m.username,
 		password: m.password,
 	}
 
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[Volume FUSE] PANIC: %v", r)
-			}
-		}()
-		if err := fs.Serve(c, filesys); err != nil {
-			log.Printf("[Volume FUSE] Error serving filesystem: %v", err)
-		}
-	}()
-
-	log.Printf("[Volume FUSE] Mounted volume %s at %s", m.volumeID, m.mountPoint)
-	return nil
+	err := fs.Serve(m.conn, filesys)
+	log.Printf("[Volume FUSE] fs.Serve returned: %v", err)
+	return err
 }
 
 // Unmount stops the FUSE mount
