@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -29,6 +34,7 @@ Commands:
   create <name> [size]        Create a new volume
   mount <id> <path> [--rw]    Mount a volume locally
   unmount <path>              Unmount a local volume
+  mounts                      List active local mounts
   inspect <id>                Show volume details
   delete <id>                 Delete a volume
   prune                       Delete all unused volumes
@@ -70,6 +76,8 @@ func handleVolume(args []string) {
 			return
 		}
 		handleVolumeUnmount(args[1])
+	case "mounts":
+		handleVolumeMounts()
 	case "inspect":
 		if len(args) < 2 {
 			fmt.Println("Error: Missing volume ID.")
@@ -175,6 +183,47 @@ func handleVolumeCreate(name, size string) {
 	fmt.Printf("  ✓ Created %s (%s, %.1fG, $%.3f/hr)\n", vol.ID, vol.Name, vol.SizeGB, vol.SizeGB*0.002)
 }
 
+// ensureCACert fetches the CA certificate from CP and caches it locally
+func ensureCACert(token string) error {
+	caPath := filepath.Join(os.Getenv("HOME"), ".okayrun", "ca.crt")
+
+	// Check if already cached
+	if _, err := os.Stat(caPath); err == nil {
+		return nil
+	}
+
+	// Fetch from CP
+	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/ca.crt", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch CA cert: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("CA cert endpoint returned %d", resp.StatusCode)
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(caPath), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Save to file
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read CA cert: %w", err)
+	}
+
+	if err := os.WriteFile(caPath, body, 0644); err != nil {
+		return fmt.Errorf("failed to write CA cert: %w", err)
+	}
+
+	return nil
+}
+
 func handleVolumeMount(id, path string, rw bool) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -182,24 +231,44 @@ func handleVolumeMount(id, path string, rw bool) {
 		return
 	}
 
-	// Verify volume exists
-	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/volumes/"+id, nil)
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	// Fetch CA cert if not cached
+	if err := ensureCACert(cfg.Token); err != nil {
+		fmt.Printf("Error: failed to fetch CA certificate: %v\n", err)
+		return
+	}
+
+	// Call mount endpoint to get JWT and agent info
+	mountReq, _ := http.NewRequest("POST", APIBaseURL+"/v1/volumes/"+id+"/mount", nil)
+	mountReq.Header.Set("Authorization", "Bearer "+cfg.Token)
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	mountResp, err := client.Do(mountReq)
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		fmt.Printf("Error: failed to call mount endpoint: %v\n", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer mountResp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		fmt.Println("  ✗ Volume not found")
+	if mountResp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		json.NewDecoder(mountResp.Body).Decode(&errResp)
+		fmt.Printf("Error: %s\n", errResp.Error)
 		return
 	}
 
-	var vol Volume
-	_ = json.NewDecoder(resp.Body).Decode(&vol)
+	var mountRespData struct {
+		AgentHost string `json:"agent_host"`
+		AgentPort int    `json:"agent_port"`
+		JWT       string `json:"jwt"`
+		Volume    Volume `json:"volume"`
+	}
+	if err := json.NewDecoder(mountResp.Body).Decode(&mountRespData); err != nil {
+		fmt.Printf("Error: failed to parse mount response: %v\n", err)
+		return
+	}
+
+	vol := mountRespData.Volume
 
 	mode := "read-only"
 	if rw {
@@ -208,16 +277,27 @@ func handleVolumeMount(id, path string, rw bool) {
 
 	fmt.Printf("  ✓ Mounting %s (%s) at %s\n", vol.ID, vol.Name, path)
 	fmt.Printf("  ✓ Mode: %s\n", mode)
+	fmt.Printf("  ✓ Agent: %s\n", mountRespData.AgentHost)
 
-	// Mount via FUSE
-	agentURL := APIBaseURL
-	if err := MountVolume(vol.ID, path, agentURL, cfg.Token); err != nil {
+	// Mount via FUSE + 9p
+	if err := MountVolume(vol.ID, path, mountRespData.AgentHost, mountRespData.AgentPort, mountRespData.JWT, rw); err != nil {
 		fmt.Printf("  ✗ Failed to mount: %v\n", err)
 		return
 	}
 
 	fmt.Printf("  ✓ FUSE mount established\n")
-	fmt.Printf("  ✓ Ready. Run 'okay volume unmount %s' when done.\n", path)
+	fmt.Printf("  ✓ Ready. Run 'okay volume unmount %s' when done.\n\n", path)
+
+	// Block until Ctrl+C or unmount
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	fmt.Println("Press Ctrl+C to unmount...")
+	<-sigChan
+
+	fmt.Println("\nUnmounting...")
+	UnmountVolume(vol.ID)
+	fmt.Println("Done.")
 }
 
 func handleVolumeUnmount(path string) {
@@ -243,6 +323,24 @@ func handleVolumeUnmount(path string) {
 	}
 
 	fmt.Printf("  ✓ Unmounted %s\n", path)
+}
+
+func handleVolumeMounts() {
+	mounts := ListMounts()
+	if len(mounts) == 0 {
+		fmt.Println("No active mounts.")
+		return
+	}
+
+	fmt.Printf("%-36s  %-20s  %-15s  %s\n", "VOLUME", "MOUNT POINT", "AGENT", "MODE")
+	fmt.Printf("%-36s  %-20s  %-15s  %s\n", "------", "-----------", "-----", "----")
+	for _, m := range mounts {
+		mode := "ro"
+		if m.RW {
+			mode = "rw"
+		}
+		fmt.Printf("%-36s  %-20s  %-15s  %s\n", m.VolumeID, m.MountPoint, m.AgentHost, mode)
+	}
 }
 
 func handleVolumeInspect(id string) {
