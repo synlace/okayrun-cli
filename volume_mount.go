@@ -204,12 +204,10 @@ type VolumeNode struct {
 
 // Attr returns the attributes of the node
 func (n *VolumeNode) Attr(ctx context.Context, a *fuse.Attr) error {
-	qids, _, attrMask, attr, err := n.file.WalkGetAttr(nil)
+	_, _, attr, err := n.file.GetAttr(p9.AttrMaskAll)
 	if err != nil {
-		return fmt.Errorf("walkgetattr failed: %w", err)
+		return fmt.Errorf("getattr failed: %w", err)
 	}
-	_ = qids
-	_ = attrMask
 
 	a.Size = uint64(attr.Size)
 	a.Mode = os.FileMode(attr.Mode)
