@@ -1,12 +1,12 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,42 +20,39 @@ import (
 type VolumeFUSEMount struct {
 	volumeID   string
 	mountPoint string
-	agentURL   string
+	baseURL    string
+	username   string
+	password   string
 	conn       *fuse.Conn
-	token      string
-	server     *http.Server
 }
 
 // NewVolumeFUSEMount creates a new FUSE mount for a volume
-func NewVolumeFUSEMount(volumeID, mountPoint, agentURL, token string) *VolumeFUSEMount {
+func NewVolumeFUSEMount(volumeID, mountPoint, baseURL, username, password string) *VolumeFUSEMount {
 	return &VolumeFUSEMount{
 		volumeID:   volumeID,
 		mountPoint: mountPoint,
-		agentURL:   agentURL,
-		token:      token,
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		username:   username,
+		password:   password,
 	}
 }
 
 // Mount starts the FUSE mount
 func (m *VolumeFUSEMount) Mount() error {
-	// Ensure mount point exists
 	if err := os.MkdirAll(m.mountPoint, 0755); err != nil {
 		return fmt.Errorf("failed to create mount point: %w", err)
 	}
 
-	// Mount FUSE
-	c, err := fuse.Mount(m.mountPoint, fuse.FSName("okayrun-volume"), fuse.Subtype("volume"))
+	c, err := fuse.Mount(m.mountPoint, fuse.FSName("okayrun-volume"), fuse.Subtype("volume"), fuse.AllowOther())
 	if err != nil {
 		return fmt.Errorf("failed to mount FUSE: %w", err)
 	}
-
 	m.conn = c
 
-	// Create and serve the filesystem
-	filesys := &VolumeFS{
-		volumeID: m.volumeID,
-		agentURL: m.agentURL,
-		token:    m.token,
+	filesys := &webdavFS{
+		baseURL:  m.baseURL,
+		username: m.username,
+		password: m.password,
 	}
 
 	go func() {
@@ -76,262 +73,258 @@ func (m *VolumeFUSEMount) Unmount() error {
 		}
 		m.conn.Close()
 	}
-
-	// Remove mount point
 	os.Remove(m.mountPoint)
-
 	log.Printf("[Volume FUSE] Unmounted volume %s from %s", m.volumeID, m.mountPoint)
 	return nil
 }
 
-// VolumeFS implements fs.FS for the volume
-type VolumeFS struct {
-	volumeID string
-	agentURL string
-	token    string
+// --- WebDAV Client ---
+
+type webdavClient struct {
+	baseURL  string
+	username string
+	password string
 }
 
-// Root returns the root directory of the filesystem
-func (f *VolumeFS) Root() (fs.Node, error) {
-	return &VolumeDir{
-		volumeID: f.volumeID,
-		agentURL: f.agentURL,
-		token:    f.token,
-		path:     "/",
+func (c *webdavClient) do(method, path string, body io.Reader, headers map[string]string) (*http.Response, error) {
+	u := c.baseURL + path
+	req, err := http.NewRequest(method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+// --- WebDAV XML types ---
+
+type multiStatus struct {
+	Responses []davResponse `xml:"response"`
+}
+
+type davResponse struct {
+	Href     string       `xml:"href"`
+	PropStat []davPropStat `xml:"propstat"`
+}
+
+type davPropStat struct {
+	Prop   davProp `xml:"prop"`
+	Status string  `xml:"status"`
+}
+
+type davProp struct {
+	DisplayName    string `xml:"displayname"`
+	ContentLength  int64  `xml:"getcontentlength"`
+	LastModified   string `xml:"getlastmodified"`
+	ResourceType   int    `xml:"resourcetype"`
+	ContentType    string `xml:"getcontenttype"`
+}
+
+// --- FUSE Filesystem ---
+
+type webdavFS struct {
+	baseURL  string
+	username string
+	password string
+}
+
+func (f *webdavFS) Root() (fs.Node, error) {
+	return &davDir{
+		client: &webdavClient{baseURL: f.baseURL, username: f.username, password: f.password},
+		path:   "/",
 	}, nil
 }
 
-// VolumeDir implements fs.Node for directories
-type VolumeDir struct {
-	volumeID string
-	agentURL string
-	token    string
-	path     string
+// --- Directory ---
+
+type davDir struct {
+	client *webdavClient
+	path   string
 }
 
-// Attr returns the attributes of the directory
-func (d *VolumeDir) Attr(ctx context.Context, a *fuse.Attr) error {
-	// Fetch attributes from agent
-	info, err := d.fetchInfo()
-	if err != nil {
-		return err
-	}
-
+func (d *davDir) Attr(ctx context.Context, a *fuse.Attr) error {
 	a.Mode = os.ModeDir | 0755
-	a.Size = uint64(info.Size)
-	a.Mtime = info.ModTime
+	a.Size = 4096
+	a.Mtime = time.Now()
 	return nil
 }
 
-// Lookup looks up a child entry
-func (d *VolumeDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
-	childPath := filepath.Join(d.path, name)
-	return &VolumeDir{
-		volumeID: d.volumeID,
-		agentURL: d.agentURL,
-		token:    d.token,
-		path:     childPath,
-	}, nil
+func (d *davDir) Lookup(ctx context.Context, name string) (fs.Node, error) {
+	childPath := d.path + name + "/"
+	return &davDir{client: d.client, path: childPath}, nil
 }
 
-// ReadDirAll returns all directory entries
-func (d *VolumeDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
-	entries, err := d.fetchEntries()
+func (d *davDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	entries, err := d.list()
 	if err != nil {
 		return nil, err
 	}
 
 	var result []fuse.Dirent
 	for _, entry := range entries {
-		kind := fuse.DT_Dir
-		if !entry.IsDir {
-			kind = fuse.DT_File
+		kind := fuse.DT_File
+		if entry.IsDir {
+			kind = fuse.DT_Dir
 		}
 		result = append(result, fuse.Dirent{
 			Name: entry.Name,
 			Type: kind,
 		})
 	}
-
 	return result, nil
 }
 
-// Create creates a new file
-func (d *VolumeDir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
-	childPath := filepath.Join(d.path, req.Name)
-	file := &VolumeFile{
-		volumeID: d.volumeID,
-		agentURL: d.agentURL,
-		token:    d.token,
-		path:     childPath,
+func (d *davDir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
+	childPath := d.path + req.Name
+	file := &davFile{
+		client: d.client,
+		path:   childPath,
 	}
 
-	// Create file on agent
-	if err := file.create(); err != nil {
+	// Create empty file via PUT
+	if err := file.writeAt([]byte{}, 0); err != nil {
 		return nil, nil, err
 	}
 
 	return file, file, nil
 }
 
-// Mkdir creates a new directory
-func (d *VolumeDir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
-	childPath := filepath.Join(d.path, req.Name)
-	dir := &VolumeDir{
-		volumeID: d.volumeID,
-		agentURL: d.agentURL,
-		token:    d.token,
-		path:     childPath,
-	}
-
-	if err := dir.mkdir(); err != nil {
-		return nil, err
-	}
-
-	return dir, nil
-}
-
-// Remove removes a file or directory
-func (d *VolumeDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
-	childPath := filepath.Join(d.path, req.Name)
-	return d.remove(childPath)
-}
-
-func (d *VolumeDir) fetchInfo() (*FileInfo, error) {
-	url := fmt.Sprintf("%s/volume/%s/info?path=%s", d.agentURL, d.volumeID, d.path)
-	req, err := http.NewRequest("GET", url, nil)
+func (d *davDir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
+	childPath := d.path + req.Name + "/"
+	resp, err := d.client.do("MKCOL", childPath, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+d.token)
+	resp.Body.Close()
 
-	resp, err := http.DefaultClient.Do(req)
+	if resp.StatusCode != 201 && resp.StatusCode != 405 {
+		return nil, fmt.Errorf("MKCOL failed: HTTP %d", resp.StatusCode)
+	}
+
+	return &davDir{client: d.client, path: childPath}, nil
+}
+
+func (d *davDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+	childPath := d.path + req.Name
+	resp, err := d.client.do("DELETE", childPath, nil, nil)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != 204 && resp.StatusCode != 404 {
+		return fmt.Errorf("DELETE failed: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (d *davDir) list() ([]davEntry, error) {
+	resp, err := d.client.do("PROPFIND", d.path, nil, map[string]string{
+		"Depth": "1",
+	})
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to fetch info: HTTP %d", resp.StatusCode)
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		return nil, fmt.Errorf("PROPFIND failed: HTTP %d", resp.StatusCode)
 	}
 
-	var info FileInfo
-	if err := decodeJSON(resp.Body, &info); err != nil {
-		return nil, err
+	var ms multiStatus
+	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
+		return nil, fmt.Errorf("failed to parse PROPFIND response: %w", err)
 	}
 
-	return &info, nil
-}
-
-func (d *VolumeDir) fetchEntries() ([]Entry, error) {
-	url := fmt.Sprintf("%s/volume/%s/list?path=%s", d.agentURL, d.volumeID, d.path)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
+	// Skip the first entry (the directory itself)
+	var entries []davEntry
+	for i, r := range ms.Responses {
+		if i == 0 {
+			continue // skip self
+		}
+		name := pathBase(r.Href)
+		if name == "" || name == "." {
+			continue
+		}
+		isDir := false
+		if len(r.PropStat) > 0 {
+			isDir = r.PropStat[0].Prop.ResourceType == 1
+		}
+		entries = append(entries, davEntry{Name: name, IsDir: isDir})
 	}
-	req.Header.Set("Authorization", "Bearer "+d.token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to list entries: HTTP %d", resp.StatusCode)
-	}
-
-	var entries []Entry
-	if err := decodeJSON(resp.Body, &entries); err != nil {
-		return nil, err
-	}
-
 	return entries, nil
 }
 
-func (d *VolumeDir) mkdir() error {
-	url := fmt.Sprintf("%s/volume/%s/mkdir?path=%s", d.agentURL, d.volumeID, d.path)
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+d.token)
+type davEntry struct {
+	Name  string
+	IsDir bool
+}
 
-	resp, err := http.DefaultClient.Do(req)
+func pathBase(href string) string {
+	href = strings.TrimSuffix(href, "/")
+	parts := strings.Split(href, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+// --- File ---
+
+type davFile struct {
+	client *webdavClient
+	path   string
+}
+
+func (f *davFile) Attr(ctx context.Context, a *fuse.Attr) error {
+	resp, err := f.client.do("PROPFIND", f.path, nil, map[string]string{
+		"Depth": "0",
+	})
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		return fmt.Errorf("failed to create directory: HTTP %d", resp.StatusCode)
+	if resp.StatusCode != 207 && resp.StatusCode != 200 {
+		a.Mode = 0644
+		a.Size = 0
+		return nil
+	}
+
+	var ms multiStatus
+	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
+		return err
+	}
+
+	if len(ms.Responses) > 0 && len(ms.Responses[0].PropStat) > 0 {
+		prop := ms.Responses[0].PropStat[0].Prop
+		a.Size = uint64(prop.ContentLength)
+		a.Mode = 0644
+		if t, err := time.Parse(time.RFC1123, prop.LastModified); err == nil {
+			a.Mtime = t
+		}
 	}
 
 	return nil
 }
 
-func (d *VolumeDir) remove(path string) error {
-	url := fmt.Sprintf("%s/volume/%s/remove?path=%s", d.agentURL, d.volumeID, path)
-	req, err := http.NewRequest("DELETE", url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+d.token)
+func (f *davFile) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
+	end := req.Offset + int64(req.Size)
+	rangeHeader := fmt.Sprintf("bytes=%d-%d", req.Offset, end-1)
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 && resp.StatusCode != 204 {
-		return fmt.Errorf("failed to remove: HTTP %d", resp.StatusCode)
-	}
-
-	return nil
-}
-
-// VolumeFile implements fs.Node and fs.Handle for files
-type VolumeFile struct {
-	volumeID string
-	agentURL string
-	token    string
-	path     string
-	file     *os.File
-}
-
-// Attr returns the attributes of the file
-func (f *VolumeFile) Attr(ctx context.Context, a *fuse.Attr) error {
-	info, err := f.fetchInfo()
-	if err != nil {
-		return err
-	}
-
-	a.Mode = 0644
-	a.Size = uint64(info.Size)
-	a.Mtime = info.ModTime
-	return nil
-}
-
-// Read reads from the file
-func (f *VolumeFile) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
-	url := fmt.Sprintf("%s/volume/%s/read?path=%s&offset=%d&size=%d",
-		f.agentURL, f.volumeID, f.path, req.Offset, req.Size)
-
-	httpReq, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+f.token)
-
-	httpResp, err := http.DefaultClient.Do(httpReq)
+	httpResp, err := f.client.do("GET", f.path, nil, map[string]string{
+		"Range": rangeHeader,
+	})
 	if err != nil {
 		return err
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != 200 {
-		return fmt.Errorf("failed to read: HTTP %d", httpResp.StatusCode)
+	if httpResp.StatusCode != 200 && httpResp.StatusCode != 206 {
+		return fmt.Errorf("GET failed: HTTP %d", httpResp.StatusCode)
 	}
 
 	data, err := io.ReadAll(httpResp.Body)
@@ -343,145 +336,55 @@ func (f *VolumeFile) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 	return nil
 }
 
-// Write writes to the file
-func (f *VolumeFile) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
-	url := fmt.Sprintf("%s/volume/%s/write?path=%s&offset=%d",
-		f.agentURL, f.volumeID, f.path, req.Offset)
+func (f *davFile) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
+	// For WebDAV, we need to PUT the full content
+	// Read existing content first if offset > 0
+	var existing []byte
+	if req.Offset > 0 {
+		httpResp, err := f.client.do("GET", f.path, nil, nil)
+		if err == nil {
+			existing, _ = io.ReadAll(httpResp.Body)
+			httpResp.Body.Close()
+		}
+	}
 
-	httpReq, err := http.NewRequest("POST", url, strings.NewReader(string(req.Data)))
+	// Build full content
+	full := make([]byte, req.Offset+int64(len(req.Data)))
+	copy(full, existing)
+	copy(full[req.Offset:], req.Data)
+
+	return f.writeAt(full, 0)
+}
+
+func (f *davFile) writeAt(data []byte, offset int64) error {
+	resp, err := f.client.do("PUT", f.path, strings.NewReader(string(data)), nil)
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+f.token)
-	httpReq.Header.Set("Content-Type", "application/octet-stream")
+	resp.Body.Close()
 
-	httpResp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode != 200 {
-		return fmt.Errorf("failed to write: HTTP %d", httpResp.StatusCode)
-	}
-
-	resp.Size = len(req.Data)
-	return nil
-}
-
-// Flush flushes the file
-func (f *VolumeFile) Flush(ctx context.Context, req *fuse.FlushRequest) error {
-	return nil
-}
-
-// Release releases the file
-func (f *VolumeFile) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
-	if f.file != nil {
-		f.file.Close()
+	if resp.StatusCode != 201 && resp.StatusCode != 204 && resp.StatusCode != 200 {
+		return fmt.Errorf("PUT failed: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
 
-func (f *VolumeFile) create() error {
-	url := fmt.Sprintf("%s/volume/%s/create?path=%s", f.agentURL, f.volumeID, f.path)
-	req, err := http.NewRequest("POST", url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+f.token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		return fmt.Errorf("failed to create file: HTTP %d", resp.StatusCode)
-	}
-
+func (f *davFile) Flush(ctx context.Context, req *fuse.FlushRequest) error {
 	return nil
 }
 
-func (f *VolumeFile) fetchInfo() (*FileInfo, error) {
-	url := fmt.Sprintf("%s/volume/%s/info?path=%s", f.agentURL, f.volumeID, f.path)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+f.token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to fetch info: HTTP %d", resp.StatusCode)
-	}
-
-	var info FileInfo
-	if err := decodeJSON(resp.Body, &info); err != nil {
-		return nil, err
-	}
-
-	return &info, nil
+func (f *davFile) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
+	return nil
 }
 
-// FileInfo represents file information
-type FileInfo struct {
-	Name    string    `json:"name"`
-	Size    int64     `json:"size"`
-	IsDir   bool      `json:"is_dir"`
-	ModTime time.Time `json:"mod_time"`
-	Mode    os.FileMode `json:"mode"`
-}
+// --- Active Mounts ---
 
-// Entry represents a directory entry
-type Entry struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"is_dir"`
-}
-
-// decodeJSON decodes JSON from a reader
-func decodeJSON(r io.Reader, v interface{}) error {
-	decoder := newJSONDecoder(r)
-	return decoder.Decode(v)
-}
-
-func newJSONDecoder(r io.Reader) *jsonDecoder {
-	return &jsonDecoder{r: r}
-}
-
-type jsonDecoder struct {
-	r io.Reader
-}
-
-func (d *jsonDecoder) Decode(v interface{}) error {
-	data, err := io.ReadAll(d.r)
-	if err != nil {
-		return err
-	}
-
-	// Simple JSON parsing using encoding/json
-	return parseJSON(data, v)
-}
-
-func parseJSON(data []byte, v interface{}) error {
-	// This is a simplified JSON parser
-	// In production, use encoding/json
-	return fmt.Errorf("JSON parsing not implemented - use encoding/json")
-}
-
-// ActiveMounts tracks active FUSE mounts
 var (
 	activeMounts   = make(map[string]*VolumeFUSEMount)
 	activeMountsMu sync.Mutex
 )
 
-// MountVolume mounts a volume locally via FUSE
-func MountVolume(volumeID, mountPoint, agentURL, token string) error {
+func MountVolume(volumeID, mountPoint, baseURL, username, password string) error {
 	activeMountsMu.Lock()
 	if _, exists := activeMounts[volumeID]; exists {
 		activeMountsMu.Unlock()
@@ -489,7 +392,7 @@ func MountVolume(volumeID, mountPoint, agentURL, token string) error {
 	}
 	activeMountsMu.Unlock()
 
-	mount := NewVolumeFUSEMount(volumeID, mountPoint, agentURL, token)
+	mount := NewVolumeFUSEMount(volumeID, mountPoint, baseURL, username, password)
 	if err := mount.Mount(); err != nil {
 		return err
 	}
@@ -501,7 +404,6 @@ func MountVolume(volumeID, mountPoint, agentURL, token string) error {
 	return nil
 }
 
-// UnmountVolume unmounts a volume
 func UnmountVolume(volumeID string) error {
 	activeMountsMu.Lock()
 	mount, exists := activeMounts[volumeID]
@@ -515,7 +417,6 @@ func UnmountVolume(volumeID string) error {
 	return mount.Unmount()
 }
 
-// UnmountAllVolumes unmounts all active volumes
 func UnmountAllVolumes() {
 	activeMountsMu.Lock()
 	mounts := make([]*VolumeFUSEMount, 0, len(activeMounts))

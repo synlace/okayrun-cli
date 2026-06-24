@@ -209,9 +209,40 @@ func handleVolumeMount(id, path string, rw bool) {
 	fmt.Printf("  ✓ Mounting %s (%s) at %s\n", vol.ID, vol.Name, path)
 	fmt.Printf("  ✓ Mode: %s\n", mode)
 
-	// Mount via FUSE
-	agentURL := APIBaseURL
-	if err := MountVolume(vol.ID, path, agentURL, cfg.Token); err != nil {
+	// Call mount endpoint to get WebDAV credentials
+	mountReq, _ := http.NewRequest("POST", APIBaseURL+"/v1/volumes/"+id+"/mount", nil)
+	mountReq.Header.Set("Authorization", "Bearer "+cfg.Token)
+	mountResp, err := client.Do(mountReq)
+	if err != nil {
+		fmt.Printf("Error: failed to call mount endpoint: %v\n", err)
+		return
+	}
+	defer mountResp.Body.Close()
+
+	if mountResp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		json.NewDecoder(mountResp.Body).Decode(&errResp)
+		fmt.Printf("Error: %s\n", errResp.Error)
+		return
+	}
+
+	var mountRespData struct {
+		AgentHost string `json:"agent_host"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		Volume    Volume `json:"volume"`
+	}
+	if err := json.NewDecoder(mountResp.Body).Decode(&mountRespData); err != nil {
+		fmt.Printf("Error: failed to parse mount response: %v\n", err)
+		return
+	}
+
+	fmt.Printf("  ✓ Agent: %s\n", mountRespData.AgentHost)
+
+	// Mount via WebDAV FUSE
+	if err := MountVolume(vol.ID, path, "https://"+mountRespData.AgentHost, mountRespData.Username, mountRespData.Password); err != nil {
 		fmt.Printf("  ✗ Failed to mount: %v\n", err)
 		return
 	}
