@@ -67,6 +67,7 @@ func (m *VolumeFUSEMount) runFUSE() {
 		baseURL:  m.baseURL,
 		username: m.username,
 		password: m.password,
+		cache:    newDavCache(2 * time.Second),
 	}
 
 	fs.Serve(m.conn, filesys)
@@ -85,12 +86,65 @@ func (m *VolumeFUSEMount) Unmount() error {
 	return nil
 }
 
+// --- Cache ---
+
+type cacheEntry struct {
+	data      interface{}
+	createdAt time.Time
+}
+
+type davCache struct {
+	entries map[string]*cacheEntry
+	mu      sync.RWMutex
+	ttl     time.Duration
+}
+
+func newDavCache(ttl time.Duration) *davCache {
+	return &davCache{
+		entries: make(map[string]*cacheEntry),
+		ttl:     ttl,
+	}
+}
+
+func (c *davCache) get(key string) (interface{}, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.entries[key]
+	if !ok || time.Since(e.createdAt) > c.ttl {
+		return nil, false
+	}
+	return e.data, true
+}
+
+func (c *davCache) set(key string, data interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = &cacheEntry{data: data, createdAt: time.Now()}
+}
+
+func (c *davCache) invalidate(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
+func (c *davCache) invalidatePrefix(prefix string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.entries {
+		if strings.HasPrefix(k, prefix) {
+			delete(c.entries, k)
+		}
+	}
+}
+
 // --- WebDAV Client ---
 
 type webdavClient struct {
 	baseURL  string
 	username string
 	password string
+	cache    *davCache
 }
 
 func (c *webdavClient) do(method, path string, body io.Reader, headers map[string]string) (*http.Response, error) {
@@ -136,11 +190,12 @@ type webdavFS struct {
 	baseURL  string
 	username string
 	password string
+	cache    *davCache
 }
 
 func (f *webdavFS) Root() (fs.Node, error) {
 	return &davDir{
-		client: &webdavClient{baseURL: f.baseURL, username: f.username, password: f.password},
+		client: &webdavClient{baseURL: f.baseURL, username: f.username, password: f.password, cache: f.cache},
 		path:   "/",
 	}, nil
 }
@@ -226,6 +281,11 @@ func (d *davDir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse
 		return nil, nil, err
 	}
 
+	// Invalidate parent directory cache
+	if d.client.cache != nil {
+		d.client.cache.invalidatePrefix("list:" + d.path)
+	}
+
 	return file, file, nil
 }
 
@@ -239,6 +299,10 @@ func (d *davDir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, er
 
 	if resp.StatusCode != 201 && resp.StatusCode != 405 {
 		return nil, fmt.Errorf("MKCOL failed: HTTP %d", resp.StatusCode)
+	}
+
+	if d.client.cache != nil {
+		d.client.cache.invalidatePrefix("list:" + d.path)
 	}
 
 	return &davDir{client: d.client, path: childPath}, nil
@@ -255,10 +319,22 @@ func (d *davDir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	if resp.StatusCode != 204 && resp.StatusCode != 404 {
 		return fmt.Errorf("DELETE failed: HTTP %d", resp.StatusCode)
 	}
+
+	if d.client.cache != nil {
+		d.client.cache.invalidatePrefix("list:" + d.path)
+	}
+
 	return nil
 }
 
 func (d *davDir) list() ([]davEntry, error) {
+	cacheKey := "list:" + d.path
+	if d.client.cache != nil {
+		if cached, ok := d.client.cache.get(cacheKey); ok {
+			return cached.([]davEntry), nil
+		}
+	}
+
 	resp, err := d.client.do("PROPFIND", d.path, nil, map[string]string{
 		"Depth": "1",
 	})
@@ -292,6 +368,11 @@ func (d *davDir) list() ([]davEntry, error) {
 		}
 		entries = append(entries, davEntry{Name: name, IsDir: isDir})
 	}
+
+	if d.client.cache != nil {
+		d.client.cache.set(cacheKey, entries)
+	}
+
 	return entries, nil
 }
 
