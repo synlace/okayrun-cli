@@ -230,6 +230,7 @@ func handleVolumeMount(id, path string, rw bool) {
 
 	var mountRespData struct {
 		AgentHost string `json:"agent_host"`
+		AgentPort int    `json:"agent_port"`
 		Username  string `json:"username"`
 		Password  string `json:"password"`
 		Volume    Volume `json:"volume"`
@@ -239,10 +240,11 @@ func handleVolumeMount(id, path string, rw bool) {
 		return
 	}
 
-	fmt.Printf("  ✓ Agent: %s\n", mountRespData.AgentHost)
+	fmt.Printf("  ✓ Agent: %s:%d\n", mountRespData.AgentHost, mountRespData.AgentPort)
 
 	// Mount via WebDAV FUSE
-	if err := MountVolume(vol.ID, path, "https://"+mountRespData.AgentHost, mountRespData.Username, mountRespData.Password); err != nil {
+	agentURL := fmt.Sprintf("https://%s:%d", mountRespData.AgentHost, mountRespData.AgentPort)
+	if err := MountVolume(vol.ID, path, agentURL, mountRespData.Username, mountRespData.Password); err != nil {
 		fmt.Printf("  ✗ Failed to mount: %v\n", err)
 		return
 	}
