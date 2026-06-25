@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1006,28 +1007,27 @@ type WSConn struct {
 	conn    *websocket.Conn
 	mu      sync.Mutex
 	reader  io.Reader
-	closing bool
+	closing int32 // atomic boolean: 0 = false, 1 = true
 }
 
 func (c *WSConn) SetClosing(closing bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.closing = closing
+	var val int32
+	if closing {
+		val = 1
+	}
+	atomic.StoreInt32(&c.closing, val)
 }
 
 func (c *WSConn) Read(b []byte) (n int, err error) {
-	c.mu.Lock()
-	if c.closing {
-		c.mu.Unlock()
+	if atomic.LoadInt32(&c.closing) == 1 {
 		return 0, io.EOF
 	}
-	c.mu.Unlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for {
-		if c.closing {
+		if atomic.LoadInt32(&c.closing) == 1 {
 			return 0, io.EOF
 		}
 		if c.reader == nil {
