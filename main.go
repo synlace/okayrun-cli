@@ -1317,11 +1317,21 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	// Without this, the default SIGINT handler kills the process immediately,
 	// and terminateSession() never runs — leaving exec sessions connected
 	// to a running VM.
+	var termState *term.State
+	var stdinFd int
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		stdinFd = int(os.Stdin.Fd())
+		termState, _ = term.GetState(stdinFd)
+	}
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		fmt.Println("\n\nTerminating session...")
+		// Restore terminal from raw mode before printing
+		if termState != nil && stdinFd > 0 {
+			term.Restore(stdinFd, termState)
+		}
+		fmt.Println("\nTerminating session...")
 		terminateSession(s.ID, cfg.Token)
 		os.Exit(0)
 	}()
