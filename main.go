@@ -735,7 +735,12 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 		onHardExit: func() {
 			term.Restore(stdinFd, oldState)
 			fmt.Println("\nTerminating session...")
-			_ = session.Close()
+			// Discard any incoming bytes (PTY cleanup sequences)
+			// so the terminal screen doesn't clear.
+			wsConn.SetClosing(true)
+			// Close the SSH client to interrupt session.Wait()
+			// so ConnectInteractive returns and exec sessions are dropped.
+			_ = client.Close()
 		},
 	}
 
@@ -998,16 +1003,33 @@ func parsePSArgs(args []string) bool {
 }
 
 type WSConn struct {
-	conn   *websocket.Conn
-	mu     sync.Mutex
-	reader io.Reader
+	conn    *websocket.Conn
+	mu      sync.Mutex
+	reader  io.Reader
+	closing bool
+}
+
+func (c *WSConn) SetClosing(closing bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closing = closing
 }
 
 func (c *WSConn) Read(b []byte) (n int, err error) {
 	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return 0, io.EOF
+	}
+	c.mu.Unlock()
+
+	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for {
+		if c.closing {
+			return 0, io.EOF
+		}
 		if c.reader == nil {
 			mt, r, err := c.conn.NextReader()
 			if err != nil {
