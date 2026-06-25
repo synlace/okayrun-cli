@@ -735,9 +735,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 		onHardExit: func() {
 			term.Restore(stdinFd, oldState)
 			fmt.Println("\nTerminating session...")
-			// Close the SSH client to interrupt session.Wait() so
-			// ConnectInteractive returns and deferred cleanup runs.
-			_ = client.Close()
+			_ = session.Close()
 		},
 	}
 
