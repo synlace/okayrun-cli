@@ -9,7 +9,7 @@ import (
 )
 
 func TestParseRunArgs_NoFlag(t *testing.T) {
-	verbose, ports, memory, cpus, disk, image, cmdArgs := parseRunArgs([]string{"fedora"})
+	verbose, ports, memory, cpus, disk, envVars, name, detach, image, cmdArgs := parseRunArgs([]string{"fedora"})
 	if verbose {
 		t.Errorf("expected verbose=false, got true")
 	}
@@ -25,6 +25,15 @@ func TestParseRunArgs_NoFlag(t *testing.T) {
 	if disk != "" {
 		t.Errorf("expected empty disk, got %v", disk)
 	}
+	if len(envVars) != 0 {
+		t.Errorf("expected empty envVars, got %v", envVars)
+	}
+	if name != "" {
+		t.Errorf("expected empty name, got %q", name)
+	}
+	if detach {
+		t.Errorf("expected detach=false, got true")
+	}
 	if image != "fedora" {
 		t.Errorf("expected image=%q, got %q", "fedora", image)
 	}
@@ -34,7 +43,7 @@ func TestParseRunArgs_NoFlag(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
-	verbose, ports, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
+	verbose, ports, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -50,7 +59,7 @@ func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
-	verbose, ports, _, _, _, image, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
+	verbose, ports, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -66,7 +75,7 @@ func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseWithCommand(t *testing.T) {
-	verbose, ports, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
+	verbose, ports, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -95,7 +104,7 @@ func TestParseRunArgs_PublishFlags(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		_, ports, _, _, _, image, _ := parseRunArgs(tc.args)
+		_, ports, _, _, _, _, _, _, image, _ := parseRunArgs(tc.args)
 		if image != tc.expectedImage {
 			t.Errorf("for args %v: expected image %q, got %q", tc.args, tc.expectedImage, image)
 		}
@@ -108,6 +117,168 @@ func TestParseRunArgs_PublishFlags(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestParseRunArgs_EnvFlags(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		expectedEnv   []string
+		expectedImage string
+	}{
+		{
+			name:          "single -e flag",
+			args:          []string{"-e", "NODE_ENV=production", "fedora"},
+			expectedEnv:   []string{"NODE_ENV=production"},
+			expectedImage: "fedora",
+		},
+		{
+			name:          "single --env flag",
+			args:          []string{"--env", "PORT=3000", "fedora"},
+			expectedEnv:   []string{"PORT=3000"},
+			expectedImage: "fedora",
+		},
+		{
+			name:          "env with equals syntax",
+			args:          []string{"--env=DEBUG=1", "fedora"},
+			expectedEnv:   []string{"DEBUG=1"},
+			expectedImage: "fedora",
+		},
+		{
+			name:          "multiple env flags",
+			args:          []string{"-e", "NODE_ENV=prod", "-e", "PORT=8080", "nginx"},
+			expectedEnv:   []string{"NODE_ENV=prod", "PORT=8080"},
+			expectedImage: "nginx",
+		},
+		{
+			name:          "env with other flags",
+			args:          []string{"-e", "A=1", "--verbose", "-p", "80:80", "-e", "B=2", "ubuntu"},
+			expectedEnv:   []string{"A=1", "B=2"},
+			expectedImage: "ubuntu",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, _, envVars, _, _, image, _ := parseRunArgs(tc.args)
+			if image != tc.expectedImage {
+				t.Errorf("expected image %q, got %q", tc.expectedImage, image)
+			}
+			if len(envVars) != len(tc.expectedEnv) {
+				t.Fatalf("expected %d env vars, got %d: %v", len(tc.expectedEnv), len(envVars), envVars)
+			}
+			for i, e := range envVars {
+				if e != tc.expectedEnv[i] {
+					t.Errorf("expected env[%d]=%q, got %q", i, tc.expectedEnv[i], e)
+				}
+			}
+		})
+	}
+}
+
+func TestParseRunArgs_NameFlag(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         []string
+		expectedName string
+	}{
+		{
+			name:         "name with space",
+			args:         []string{"--name", "my-app", "fedora"},
+			expectedName: "my-app",
+		},
+		{
+			name:         "name with equals",
+			args:         []string{"--name=my-container", "fedora"},
+			expectedName: "my-container",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, _, _, name, _, _, _ := parseRunArgs(tc.args)
+			if name != tc.expectedName {
+				t.Errorf("expected name %q, got %q", tc.expectedName, name)
+			}
+		})
+	}
+}
+
+func TestParseRunArgs_DetachFlag(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		expected bool
+	}{
+		{
+			name:     "short -d flag",
+			args:     []string{"-d", "fedora"},
+			expected: true,
+		},
+		{
+			name:     "long --detach flag",
+			args:     []string{"--detach", "fedora"},
+			expected: true,
+		},
+		{
+			name:     "no detach flag",
+			args:     []string{"fedora"},
+			expected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, _, _, _, detach, _, _ := parseRunArgs(tc.args)
+			if detach != tc.expected {
+				t.Errorf("expected detach=%v, got %v", tc.expected, detach)
+			}
+		})
+	}
+}
+
+func TestParseRunArgs_AllFlagsCombined(t *testing.T) {
+	args := []string{
+		"-e", "NODE_ENV=prod",
+		"--name", "web-server",
+		"-d",
+		"-p", "80:80",
+		"--memory", "1g",
+		"--cpus", "2",
+		"nginx",
+	}
+	verbose, ports, memory, cpus, disk, envVars, name, detach, image, cmdArgs := parseRunArgs(args)
+
+	if verbose {
+		t.Errorf("expected verbose=false")
+	}
+	if image != "nginx" {
+		t.Errorf("expected image=%q, got %q", "nginx", image)
+	}
+	if !detach {
+		t.Errorf("expected detach=true")
+	}
+	if name != "web-server" {
+		t.Errorf("expected name=%q, got %q", "web-server", name)
+	}
+	if len(envVars) != 1 || envVars[0] != "NODE_ENV=prod" {
+		t.Errorf("expected envVars=[NODE_ENV=prod], got %v", envVars)
+	}
+	if len(ports) != 1 || ports[0] != "80:80" {
+		t.Errorf("expected ports=[80:80], got %v", ports)
+	}
+	if memory != "1g" {
+		t.Errorf("expected memory=%q, got %q", "1g", memory)
+	}
+	if cpus != 2 {
+		t.Errorf("expected cpus=2, got %d", cpus)
+	}
+	if disk != "" {
+		t.Errorf("expected empty disk, got %q", disk)
+	}
+	if len(cmdArgs) != 0 {
+		t.Errorf("expected empty cmdArgs, got %v", cmdArgs)
 	}
 }
 

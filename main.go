@@ -113,7 +113,7 @@ func main() {
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing image or --compose argument.")
 			fmt.Println("Usage:")
-			fmt.Println("  okay run [--verbose] <image> [command...]")
+			fmt.Println("  okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] <image> [command...]")
 			fmt.Println("  okay run [--verbose] --compose [compose-file-path]")
 			return
 		}
@@ -140,13 +140,13 @@ func main() {
 			}
 			handleComposeRun(composePath, verbose)
 		} else {
-			verbose, ports, memory, cpus, disk, image, cmdArgs := parseRunArgs(os.Args[2:])
+			verbose, ports, memory, cpus, disk, envVars, name, detach, image, cmdArgs := parseRunArgs(os.Args[2:])
 			if image == "" {
 				fmt.Println("Error: Missing image argument.")
-				fmt.Println("Usage: okay run [--verbose] [-p/--publish <port>] [--memory <size>] [--cpus <count>] [--disk <size>] <image> [command...]")
+				fmt.Println("Usage: okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] [-p/--publish <port>] [--memory <size>] [--cpus <count>] [--disk <size>] <image> [command...]")
 				return
 			}
-			handleRun(image, cmdArgs, verbose, ports, memory, cpus, disk)
+			handleRun(image, cmdArgs, verbose, ports, memory, cpus, disk, envVars, name, detach)
 		}
 	case "stop":
 		if len(os.Args) < 3 {
@@ -282,6 +282,10 @@ Commands:
   help               Show this manual page
 
 Resource Flags (for 'run'):
+  -e, --env <key=val>  Set environment variables (repeatable)
+  --name <name>        Assign a name to the session (default: derived from image)
+  -d, --detach         Run in background, print session ID and exit
+  -p, --publish <port> Publish a port (e.g., 3000:3000)
   --memory, -m <size>  Memory limit (e.g., 512m, 2g). Default: 512m
   --cpus <count>       Number of CPUs (e.g., 1, 2, 4). Default: 1
   --disk <size>        Disk size (e.g., 1g, 10g). Default: 1g
@@ -291,6 +295,10 @@ Examples:
   okay run ubuntu --memory 2g               # 1 CPU, 2GB, 1G
   okay run ubuntu --cpus 2 --memory 4g      # 2 CPUs, 4GB, 1G
   okay run ubuntu --cpus 2 --memory 4g --disk 10g
+  okay run -e NODE_ENV=production ubuntu    # With environment variable
+  okay run --name my-app ubuntu             # Custom session name
+  okay run -d ubuntu                        # Detach, print session ID
+  okay run -e PORT=3000 -e DEBUG=1 -d ubuntu
 `)
 }
 
@@ -907,12 +915,28 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, se
 // parseRunArgs splits the os.Args slice passed after "run" into its components.
 // A --verbose flag appearing anywhere in args is extracted; the first remaining
 // positional argument is the image; any remaining arguments are cmdArgs.
-func parseRunArgs(args []string) (verbose bool, ports []string, memory string, cpus int, disk string, image string, cmdArgs []string) {
+func parseRunArgs(args []string) (verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, image string, cmdArgs []string) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--verbose" {
 			verbose = true
+		} else if a == "-e" || a == "--env" {
+			if i+1 < len(args) {
+				envVars = append(envVars, args[i+1])
+				i++
+			}
+		} else if strings.HasPrefix(a, "--env=") {
+			envVars = append(envVars, strings.TrimPrefix(a, "--env="))
+		} else if a == "--name" {
+			if i+1 < len(args) {
+				name = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(a, "--name=") {
+			name = strings.TrimPrefix(a, "--name=")
+		} else if a == "-d" || a == "--detach" {
+			detach = true
 		} else if a == "-p" || a == "--publish" {
 			if i+1 < len(args) {
 				ports = append(ports, args[i+1])
@@ -1105,14 +1129,14 @@ func hasIPv6() bool {
 	return false
 }
 
-func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string) {
+func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
 		return
 	}
 
-	isInteractive := len(cmdArgs) == 0
+	isInteractive := len(cmdArgs) == 0 && !detach
 
 	if isInteractive {
 		fmt.Print("\033[0m\033[?25h\n")
@@ -1156,6 +1180,12 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		"image": image,
 		"name":  deriveServiceName(image),
 	}
+	if name != "" {
+		payload["name"] = name
+	}
+	if len(envVars) > 0 {
+		payload["environment"] = envVars
+	}
 	if len(ports) > 0 {
 		payload["ports"] = ports
 	}
@@ -1194,6 +1224,11 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 
 	var s Session
 	_ = json.NewDecoder(resp.Body).Decode(&s)
+
+	if detach {
+		fmt.Printf("%s\n", s.ID)
+		return
+	}
 
 	if isInteractive {
 		fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
