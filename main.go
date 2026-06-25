@@ -646,15 +646,18 @@ type RawOSTerminalBridge struct{}
 func terminateSession(sessionID, token string) {
 	req, err := http.NewRequest("DELETE", fmt.Sprintf("%s/v1/sessions/%s", APIBaseURL, sessionID), nil)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "terminate: build request failed: %v\n", err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
-	if err == nil {
-		_ = resp.Body.Close()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "terminate: request failed: %v\n", err)
+		return
 	}
+	_ = resp.Body.Close()
 }
 
 func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, token, sessionID string, entrypoint, cmd []string) error {
@@ -1331,7 +1334,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		if termState != nil && stdinFd > 0 {
 			term.Restore(stdinFd, termState)
 		}
-		fmt.Println("\nTerminating session...")
+		fmt.Fprintf(os.Stderr, "\nTerminating session %s...\n", s.ID)
 		terminateSession(s.ID, cfg.Token)
 		os.Exit(0)
 	}()
