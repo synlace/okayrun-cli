@@ -734,7 +734,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 		reader: os.Stdin,
 		onHardExit: func() {
 			term.Restore(stdinFd, oldState)
-			fmt.Println("\nHard exit triggered. Terminating session.")
+			fmt.Println("\nTerminating session...")
 			terminateSession(sessionID, token)
 			os.Exit(0)
 		},
@@ -1068,7 +1068,6 @@ func (c *WSConn) SetWriteDeadline(t time.Time) error {
 type SSHStdinWrapper struct {
 	reader     io.Reader
 	mu         sync.Mutex
-	lastCtrlC  time.Time
 	onHardExit func()
 }
 
@@ -1081,15 +1080,9 @@ func (s *SSHStdinWrapper) Read(p []byte) (n int, err error) {
 	defer s.mu.Unlock()
 	for i := 0; i < n; i++ {
 		if p[i] == 3 { // Ctrl+C
-			now := time.Now()
-			if !s.lastCtrlC.IsZero() && now.Sub(s.lastCtrlC) < 1*time.Second {
-				if s.onHardExit != nil {
-					s.onHardExit()
-				}
+			if s.onHardExit != nil {
+				s.onHardExit()
 			}
-			s.lastCtrlC = now
-		} else {
-			s.lastCtrlC = time.Time{}
 		}
 	}
 	return n, nil
@@ -1315,29 +1308,6 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		fmt.Printf("%s\n", s.ID)
 		return
 	}
-
-	// Catch Ctrl+C and terminate the session before exiting.
-	// Without this, the default SIGINT handler kills the process immediately,
-	// and terminateSession() never runs — leaving exec sessions connected
-	// to a running VM.
-	var termState *term.State
-	var stdinFd int
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		stdinFd = int(os.Stdin.Fd())
-		termState, _ = term.GetState(stdinFd)
-	}
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		// Restore terminal from raw mode before printing
-		if termState != nil && stdinFd > 0 {
-			term.Restore(stdinFd, termState)
-		}
-		fmt.Fprintf(os.Stderr, "\nTerminating session %s...\n", s.ID)
-		terminateSession(s.ID, cfg.Token)
-		os.Exit(0)
-	}()
 
 	if isInteractive {
 		fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
