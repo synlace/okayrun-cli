@@ -113,7 +113,7 @@ func main() {
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Missing image or --compose argument.")
 			fmt.Println("Usage:")
-			fmt.Println("  okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] <image> [command...]")
+			fmt.Println("  okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] [-v/--volume <name:mount>] <image> [command...]")
 			fmt.Println("  okay run [--verbose] --compose [compose-file-path]")
 			return
 		}
@@ -140,13 +140,13 @@ func main() {
 			}
 			handleComposeRun(composePath, verbose)
 		} else {
-			verbose, ports, memory, cpus, disk, envVars, name, detach, image, cmdArgs := parseRunArgs(os.Args[2:])
+			verbose, ports, memory, cpus, disk, envVars, name, detach, volumes, image, cmdArgs := parseRunArgs(os.Args[2:])
 			if image == "" {
 				fmt.Println("Error: Missing image argument.")
-				fmt.Println("Usage: okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] [-p/--publish <port>] [--memory <size>] [--cpus <count>] [--disk <size>] <image> [command...]")
+				fmt.Println("Usage: okay run [--verbose] [-e/--env <key=val>] [--name <name>] [-d] [-v/--volume <name:mount>] [-p/--publish <port>] [--memory <size>] [--cpus <count>] [--disk <size>] <image> [command...]")
 				return
 			}
-			handleRun(image, cmdArgs, verbose, ports, memory, cpus, disk, envVars, name, detach)
+			handleRun(image, cmdArgs, verbose, ports, memory, cpus, disk, envVars, name, detach, volumes)
 		}
 	case "stop":
 		if len(os.Args) < 3 {
@@ -282,13 +282,14 @@ Commands:
   help               Show this manual page
 
 Resource Flags (for 'run'):
-  -e, --env <key=val>  Set environment variables (repeatable)
-  --name <name>        Assign a name to the session (default: derived from image)
-  -d, --detach         Run in background, print session ID and exit
-  -p, --publish <port> Publish a port (e.g., 3000:3000)
-  --memory, -m <size>  Memory limit (e.g., 512m, 2g). Default: 512m
-  --cpus <count>       Number of CPUs (e.g., 1, 2, 4). Default: 1
-  --disk <size>        Disk size (e.g., 1g, 10g). Default: 1g
+  -e, --env <key=val>     Set environment variables (repeatable)
+  --name <name>           Assign a name to the session (default: derived from image)
+  -d, --detach            Run in background, print session ID and exit
+  -v, --volume <name:mt>  Mount a named volume (repeatable, e.g., -v wp_data:/var/lib/html)
+  -p, --publish <port>    Publish a port (e.g., 3000:3000)
+  --memory, -m <size>     Memory limit (e.g., 512m, 2g). Default: 512m
+  --cpus <count>          Number of CPUs (e.g., 1, 2, 4). Default: 1
+  --disk <size>           Disk size (e.g., 1g, 10g). Default: 1g
 
 Examples:
   okay run ubuntu                           # Default: 1 CPU, 512MB, 1G
@@ -299,6 +300,7 @@ Examples:
   okay run --name my-app ubuntu             # Custom session name
   okay run -d ubuntu                        # Detach, print session ID
   okay run -e PORT=3000 -e DEBUG=1 -d ubuntu
+  okay run -v wp_data:/var/lib/html ubuntu  # Mount a named volume
 `)
 }
 
@@ -915,7 +917,7 @@ func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, se
 // parseRunArgs splits the os.Args slice passed after "run" into its components.
 // A --verbose flag appearing anywhere in args is extracted; the first remaining
 // positional argument is the image; any remaining arguments are cmdArgs.
-func parseRunArgs(args []string) (verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, image string, cmdArgs []string) {
+func parseRunArgs(args []string) (verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumes []string, image string, cmdArgs []string) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -937,6 +939,11 @@ func parseRunArgs(args []string) (verbose bool, ports []string, memory string, c
 			name = strings.TrimPrefix(a, "--name=")
 		} else if a == "-d" || a == "--detach" {
 			detach = true
+		} else if a == "-v" || a == "--volume" {
+			if i+1 < len(args) {
+				volumes = append(volumes, args[i+1])
+				i++
+			}
 		} else if a == "-p" || a == "--publish" {
 			if i+1 < len(args) {
 				ports = append(ports, args[i+1])
@@ -1129,7 +1136,7 @@ func hasIPv6() bool {
 	return false
 }
 
-func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool) {
+func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumeRefs []string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Println("Error: You are not logged in. Please run: okay login")
@@ -1173,6 +1180,76 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		fmt.Println("[1/3] Warning: No IPv6 detected on this system. okayrun.net domains are IPv6-only and may not be accessible from your connection. SSH via CLI will still work.")
 	}
 
+	// Resolve volumes
+	var resolvedVolumes []map[string]string
+	if len(volumeRefs) > 0 {
+		if isInteractive {
+			fmt.Printf("[2/3] Resolving volumes...\n")
+		}
+		volumeMap := make(map[string]string) // name -> id (dedup)
+		for _, ref := range volumeRefs {
+			parts := strings.SplitN(ref, ":", 2)
+			if len(parts) != 2 {
+				fmt.Printf("Error: Invalid volume format: %s (expected name:mountpoint)\n", ref)
+				return
+			}
+			source := parts[0]
+			mountPoint := parts[1]
+
+			if strings.HasPrefix(source, ".") || strings.HasPrefix(source, "/") {
+				fmt.Printf("Error: Bind mount not supported: %s. Use a named volume instead.\n", ref)
+				return
+			}
+
+			// Deduplicate
+			if volID, exists := volumeMap[source]; exists {
+				resolvedVolumes = append(resolvedVolumes, map[string]string{
+					"volume_id":   volID,
+					"mount_point": mountPoint,
+				})
+				continue
+			}
+
+			// Look up volume by name
+			checkReq, _ := http.NewRequest("GET", APIBaseURL+"/v1/volumes", nil)
+			checkReq.Header.Set("Authorization", "Bearer "+cfg.Token)
+			checkResp, err := client.Do(checkReq)
+			if err != nil {
+				fmt.Printf("Error checking volumes: %v\n", err)
+				return
+			}
+			var volList struct {
+				Volumes []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"volumes"`
+			}
+			_ = json.NewDecoder(checkResp.Body).Decode(&volList)
+			checkResp.Body.Close()
+
+			found := false
+			for _, v := range volList.Volumes {
+				if v.Name == source {
+					volumeMap[source] = v.ID
+					resolvedVolumes = append(resolvedVolumes, map[string]string{
+						"volume_id":   v.ID,
+						"mount_point": mountPoint,
+					})
+					if isInteractive {
+						fmt.Printf("  ✓ Volume %s -> %s\n", source, mountPoint)
+					}
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				fmt.Printf("Error: Volume '%s' not found. Create it first with: okay volume create %s\n", source, source)
+				return
+			}
+		}
+	}
+
 	if isInteractive {
 		fmt.Printf("[2/3] Requesting dynamic microVM spawn... (%s rootfs overlay)\n", image)
 	}
@@ -1200,6 +1277,9 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	}
 	if detach {
 		payload["detach"] = true
+	}
+	if len(resolvedVolumes) > 0 {
+		payload["volumes"] = resolvedVolumes
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
