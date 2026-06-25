@@ -9,7 +9,7 @@ import (
 )
 
 func TestParseRunArgs_NoFlag(t *testing.T) {
-	verbose, ports, memory, cpus, disk, envVars, name, detach, image, cmdArgs := parseRunArgs([]string{"fedora"})
+	verbose, ports, memory, cpus, disk, envVars, name, detach, volumes, image, cmdArgs := parseRunArgs([]string{"fedora"})
 	if verbose {
 		t.Errorf("expected verbose=false, got true")
 	}
@@ -34,6 +34,9 @@ func TestParseRunArgs_NoFlag(t *testing.T) {
 	if detach {
 		t.Errorf("expected detach=false, got true")
 	}
+	if len(volumes) != 0 {
+		t.Errorf("expected empty volumes, got %v", volumes)
+	}
 	if image != "fedora" {
 		t.Errorf("expected image=%q, got %q", "fedora", image)
 	}
@@ -43,7 +46,7 @@ func TestParseRunArgs_NoFlag(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
-	verbose, ports, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
+	verbose, ports, _, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -59,7 +62,7 @@ func TestParseRunArgs_VerboseFlagFirst(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
-	verbose, ports, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
+	verbose, ports, _, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"fedora", "--verbose"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -75,7 +78,7 @@ func TestParseRunArgs_VerboseFlagLast(t *testing.T) {
 }
 
 func TestParseRunArgs_VerboseWithCommand(t *testing.T) {
-	verbose, ports, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
+	verbose, ports, _, _, _, _, _, _, _, image, cmdArgs := parseRunArgs([]string{"--verbose", "fedora", "echo hi"})
 	if !verbose {
 		t.Errorf("expected verbose=true, got false")
 	}
@@ -104,7 +107,7 @@ func TestParseRunArgs_PublishFlags(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		_, ports, _, _, _, _, _, _, image, _ := parseRunArgs(tc.args)
+		_, ports, _, _, _, _, _, _, _, image, _ := parseRunArgs(tc.args)
 		if image != tc.expectedImage {
 			t.Errorf("for args %v: expected image %q, got %q", tc.args, tc.expectedImage, image)
 		}
@@ -161,7 +164,7 @@ func TestParseRunArgs_EnvFlags(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, _, _, envVars, _, _, image, _ := parseRunArgs(tc.args)
+			_, _, _, _, _, envVars, _, _, _, image, _ := parseRunArgs(tc.args)
 			if image != tc.expectedImage {
 				t.Errorf("expected image %q, got %q", tc.expectedImage, image)
 			}
@@ -197,9 +200,60 @@ func TestParseRunArgs_NameFlag(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, _, _, _, name, _, _, _ := parseRunArgs(tc.args)
+			_, _, _, _, _, _, name, _, _, _, _ := parseRunArgs(tc.args)
 			if name != tc.expectedName {
 				t.Errorf("expected name %q, got %q", tc.expectedName, name)
+			}
+		})
+	}
+}
+
+func TestParseRunArgs_VolumeFlags(t *testing.T) {
+	tests := []struct {
+		name            string
+		args            []string
+		expectedVolumes []string
+		expectedImage   string
+	}{
+		{
+			name:            "single -v flag",
+			args:            []string{"-v", "wp_data:/var/lib/html", "ubuntu"},
+			expectedVolumes: []string{"wp_data:/var/lib/html"},
+			expectedImage:   "ubuntu",
+		},
+		{
+			name:            "single --volume flag",
+			args:            []string{"--volume", "db_data:/var/lib/mysql", "ubuntu"},
+			expectedVolumes: []string{"db_data:/var/lib/mysql"},
+			expectedImage:   "ubuntu",
+		},
+		{
+			name:            "multiple volume flags",
+			args:            []string{"-v", "wp_data:/var/lib/html", "-v", "db_data:/var/lib/mysql", "ubuntu"},
+			expectedVolumes: []string{"wp_data:/var/lib/html", "db_data:/var/lib/mysql"},
+			expectedImage:   "ubuntu",
+		},
+		{
+			name:            "volume with other flags",
+			args:            []string{"-v", "data:/data", "-e", "FOO=bar", "-p", "80:80", "ubuntu"},
+			expectedVolumes: []string{"data:/data"},
+			expectedImage:   "ubuntu",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, _, _, _, _, volumes, image, _ := parseRunArgs(tc.args)
+			if image != tc.expectedImage {
+				t.Errorf("expected image %q, got %q", tc.expectedImage, image)
+			}
+			if len(volumes) != len(tc.expectedVolumes) {
+				t.Fatalf("expected %d volumes, got %d: %v", len(tc.expectedVolumes), len(volumes), volumes)
+			}
+			for i, v := range volumes {
+				if v != tc.expectedVolumes[i] {
+					t.Errorf("expected volume[%d]=%q, got %q", i, tc.expectedVolumes[i], v)
+				}
 			}
 		})
 	}
@@ -230,7 +284,7 @@ func TestParseRunArgs_DetachFlag(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, _, _, _, _, detach, _, _ := parseRunArgs(tc.args)
+			_, _, _, _, _, _, _, detach, _, _, _ := parseRunArgs(tc.args)
 			if detach != tc.expected {
 				t.Errorf("expected detach=%v, got %v", tc.expected, detach)
 			}
@@ -248,7 +302,7 @@ func TestParseRunArgs_AllFlagsCombined(t *testing.T) {
 		"--cpus", "2",
 		"nginx",
 	}
-	verbose, ports, memory, cpus, disk, envVars, name, detach, image, cmdArgs := parseRunArgs(args)
+	verbose, ports, memory, cpus, disk, envVars, name, detach, _, image, cmdArgs := parseRunArgs(args)
 
 	if verbose {
 		t.Errorf("expected verbose=false")
