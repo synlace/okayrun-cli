@@ -735,8 +735,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 		onHardExit: func() {
 			term.Restore(stdinFd, oldState)
 			fmt.Println("\nTerminating session...")
-			terminateSession(sessionID, token)
-			os.Exit(0)
+			_ = session.Close()
 		},
 	}
 
