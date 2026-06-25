@@ -1027,42 +1027,10 @@ func (c *WSConn) Read(b []byte) (n int, err error) {
 			if n == 0 {
 				continue
 			}
-			return c.filterEscapeSequences(b[:n])
-		}
-		if n > 0 {
-			return c.filterEscapeSequences(b[:n])
+			return n, nil
 		}
 		return n, err
 	}
-}
-
-// filterEscapeSequences removes PTY cleanup sequences that clear the screen.
-// \x1b[2J\x1b[H clears screen and moves cursor to top — sent by the VM's
-// shell when the SSH connection closes.
-func (c *WSConn) filterEscapeSequences(data []byte) (int, error) {
-	// Fast path: no ESC byte, nothing to filter
-	hasESC := false
-	for _, b := range data {
-		if b == 0x1b {
-			hasESC = true
-			break
-		}
-	}
-	if !hasESC {
-		return len(data), nil
-	}
-
-	sequence := []byte{0x1b, '[', '2', 'J', 0x1b, '[', 'H'}
-	filtered := data
-	for {
-		idx := bytes.Index(filtered, sequence)
-		if idx == -1 {
-			break
-		}
-		filtered = append(filtered[:idx], filtered[idx+len(sequence):]...)
-	}
-	copy(data, filtered)
-	return len(filtered), nil
 }
 
 func (c *WSConn) Write(b []byte) (n int, err error) {
