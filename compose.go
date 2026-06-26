@@ -372,7 +372,7 @@ func handleComposeRun(composePath string, verbose bool) {
 		wg.Add(1)
 		color := logColors[i%len(logColors)]
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true)
+		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true, cfg.Token)
 	}
 
 	wg.Wait()
@@ -380,7 +380,7 @@ func handleComposeRun(composePath string, verbose bool) {
 	os.Exit(0)
 }
 
-func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGroup, stopChan chan struct{}, follow bool) {
+func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGroup, stopChan chan struct{}, follow bool, token string) {
 	defer wg.Done()
 
 	dialer := newWebSocketDialer()
@@ -395,7 +395,7 @@ func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGro
 		default:
 		}
 
-		ws, _, err = dialer.Dial(wsURL, nil)
+		ws, _, err = dialer.Dial(wsURL, wsAuthHeaders(token))
 		if err == nil {
 			break
 		}
@@ -992,7 +992,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 		wg.Add(1)
 		color := logColors[i%len(logColors)]
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true)
+		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true, cfg.Token)
 	}
 
 	wg.Wait()
@@ -1107,7 +1107,7 @@ func handleComposeLogs(projectName string, subArgs []string) {
 		wg.Add(1)
 		color := logColors[i%len(logColors)]
 		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
-		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, follow)
+		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, follow, cfg.Token)
 	}
 
 	wg.Wait()

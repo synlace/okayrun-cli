@@ -128,6 +128,11 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// wsAuthHeaders returns HTTP headers for WebSocket auth via Sec-WebSocket-Protocol.
+func wsAuthHeaders(token string) http.Header {
+	return http.Header{"Sec-WebSocket-Protocol": {"bearer." + token}}
+}
+
 // newWebSocketDialer returns a *websocket.Dialer that uses the same proxy
 // and TLS configuration as the HTTP clients.
 func newWebSocketDialer() *websocket.Dialer {
@@ -804,7 +809,7 @@ func terminateSession(sessionID, token string) {
 
 func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, token, sessionID string, entrypoint, cmd []string) error {
 	dialer := newWebSocketDialer()
-	ws, resp, err := dialer.Dial(wsURL, nil)
+	ws, resp, err := dialer.Dial(wsURL, wsAuthHeaders(token))
 	if err != nil {
 		if resp != nil {
 			return fmt.Errorf("Error opening terminal socket bridge: websocket handshake failed (HTTP %d %s)", resp.StatusCode, resp.Status)
@@ -937,7 +942,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 
 func (r *RawOSTerminalBridge) ConnectInteractiveSerial(wsURL string, token, sessionID string) error {
 	dialer := newWebSocketDialer()
-	ws, resp, err := dialer.Dial(wsURL, nil)
+	ws, resp, err := dialer.Dial(wsURL, wsAuthHeaders(token))
 	if err != nil {
 		if resp != nil {
 			return fmt.Errorf("Error opening terminal socket bridge: websocket handshake failed (HTTP %d %s)", resp.StatusCode, resp.Status)
@@ -999,7 +1004,7 @@ func (r *RawOSTerminalBridge) ConnectInteractiveSerial(wsURL string, token, sess
 
 func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, sessionID string) error {
 	dialer := newWebSocketDialer()
-	ws, resp, err := dialer.Dial(wsURL, nil)
+	ws, resp, err := dialer.Dial(wsURL, wsAuthHeaders(token))
 	if err != nil {
 		if resp != nil {
 			return fmt.Errorf("Error opening terminal socket bridge: websocket handshake failed (HTTP %d %s)", resp.StatusCode, resp.Status)
