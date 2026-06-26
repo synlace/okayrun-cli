@@ -254,7 +254,7 @@ func handleComposeRun(composePath string, verbose bool) {
 	fmt.Printf("[1/3] Checking account balance and credentials...\n")
 	profileReq, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 	profileReq.Header.Set("Authorization", "Bearer "+cfg.Token)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	pResp, err := client.Do(profileReq)
 	if err != nil {
 		fmt.Printf("Error connecting to server: %v\n", err)
@@ -383,7 +383,7 @@ func handleComposeRun(composePath string, verbose bool) {
 func StreamLogs(serviceName string, color string, wsURL string, wg *sync.WaitGroup, stopChan chan struct{}, follow bool) {
 	defer wg.Done()
 
-	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	dialer := newWebSocketDialer()
 	var ws *websocket.Conn
 	var err error
 
@@ -563,7 +563,7 @@ func fetchActiveSessions(token string) ([]Session, error) {
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -694,7 +694,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	fmt.Printf("[1/5] Checking account balance and credentials...\n")
 	profileReq, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 	profileReq.Header.Set("Authorization", "Bearer "+cfg.Token)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	pResp, err := client.Do(profileReq)
 	if err != nil {
 		fmt.Printf("Error connecting to server: %v\n", err)
@@ -883,7 +883,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
 
-	spawnClient := &http.Client{Timeout: 120 * time.Second}
+	spawnClient := newHTTPClient(120 * time.Second)
 	resp, err := spawnClient.Do(req)
 	if err != nil {
 		fmt.Printf("Error running stack: %v\n", err)
@@ -1032,7 +1032,7 @@ func handleComposeDown(projectName string, subArgs []string) {
 		return
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	var cleanupWg sync.WaitGroup
 	for _, s := range targetSessions {
 		cleanupWg.Add(1)

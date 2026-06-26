@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -28,6 +30,8 @@ var (
 	APIBaseURL     = "https://okayrun.io"
 	WSBaseURL      = "wss://okayrun.io/v1"
 	ConfigFileName = ".okay.json"
+	globalProxy   string
+	globalNoVerify bool
 )
 
 func init() {
@@ -42,8 +46,104 @@ func init() {
 }
 
 type Config struct {
-	Token string `json:"token"`
-	Email string `json:"email"`
+	Token         string `json:"token"`
+	Email         string `json:"email"`
+	Proxy         string `json:"proxy,omitempty"`
+	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"`
+}
+
+// ProxyConfig holds the resolved proxy configuration for HTTP clients.
+type ProxyConfig struct {
+	ProxyURL      *url.URL
+	TLSSkipVerify bool
+}
+
+var resolvedProxy *ProxyConfig
+
+// resolveProxyConfig merges CLI flags, environment variables, and config file
+// settings. Precedence: CLI flag > env var > config file.
+func resolveProxyConfig(cfg *Config) *ProxyConfig {
+	var proxyURL *url.URL
+	var skipVerify bool
+
+	// Start with config file values
+	if cfg != nil && cfg.Proxy != "" {
+		if u, err := url.Parse(cfg.Proxy); err == nil {
+			proxyURL = u
+		}
+	}
+	if cfg != nil && cfg.TLSSkipVerify {
+		skipVerify = true
+	}
+
+	// Environment variables override config file
+	if envProxy := os.Getenv("OKAY_PROXY"); envProxy != "" {
+		if u, err := url.Parse(envProxy); err == nil {
+			proxyURL = u
+		}
+	}
+	if os.Getenv("OKAY_TLS_SKIP_VERIFY") == "1" || os.Getenv("OKAY_TLS_SKIP_VERIFY") == "true" {
+		skipVerify = true
+	}
+
+	// CLI flags override everything
+	if globalProxy != "" {
+		if u, err := url.Parse(globalProxy); err == nil {
+			proxyURL = u
+		}
+	}
+	if globalNoVerify {
+		skipVerify = true
+	}
+
+	return &ProxyConfig{ProxyURL: proxyURL, TLSSkipVerify: skipVerify}
+}
+
+func getProxyConfig() *ProxyConfig {
+	if resolvedProxy != nil {
+		return resolvedProxy
+	}
+	cfg, _ := loadConfig()
+	resolvedProxy = resolveProxyConfig(cfg)
+	return resolvedProxy
+}
+
+// newHTTPClient returns an *http.Client configured with the resolved proxy
+// and TLS settings. Each call returns a new client with its own transport.
+func newHTTPClient(timeout time.Duration) *http.Client {
+	pc := getProxyConfig()
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: pc.TLSSkipVerify,
+		},
+	}
+	if pc.ProxyURL != nil {
+		transport.Proxy = http.ProxyURL(pc.ProxyURL)
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+}
+
+// newWebSocketDialer returns a *websocket.Dialer that uses the same proxy
+// and TLS configuration as the HTTP clients.
+func newWebSocketDialer() *websocket.Dialer {
+	pc := getProxyConfig()
+
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: pc.TLSSkipVerify,
+		},
+	}
+	if pc.ProxyURL != nil {
+		dialer.Proxy = http.ProxyURL(pc.ProxyURL)
+	}
+
+	return dialer
 }
 
 func getConfigPath() string {
@@ -81,7 +181,33 @@ func saveConfig(token, email string) error {
 	return os.WriteFile(getConfigPath(), data, 0600)
 }
 
+// parseGlobalFlags extracts --proxy and --no-proxy-verify from os.Args and
+// returns the cleaned args without those flags. Must be called before any
+// command-level argument parsing.
+func parseGlobalFlags(args []string) []string {
+	var cleaned []string
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		if a == "--proxy" {
+			if i+1 < len(args) {
+				globalProxy = args[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(a, "--proxy=") {
+			globalProxy = strings.TrimPrefix(a, "--proxy=")
+		} else if a == "--no-proxy-verify" {
+			globalNoVerify = true
+		} else {
+			cleaned = append(cleaned, a)
+		}
+	}
+	return append([]string{args[0]}, cleaned...)
+}
+
 func main() {
+	// Parse global flags before command dispatch
+	os.Args = parseGlobalFlags(os.Args)
+
 	if len(os.Args) < 2 {
 		printUsage()
 		return
@@ -264,7 +390,16 @@ func printUsage() {
 	fmt.Print(`⚡ OKAY RUN - Ephemeral Firecracker microVM CLI Tool
  
 Usage:
-  okay <command> [arguments]
+  okay [--proxy <url>] [--no-proxy-verify] <command> [arguments]
+
+Global Flags:
+  --proxy <url>           Route all requests through an HTTP proxy (e.g., http://127.0.0.1:8080)
+  --no-proxy-verify       Skip TLS certificate verification (required for MITM proxies)
+
+  These can also be set via:
+    OKAY_PROXY env var           (e.g., export OKAY_PROXY=http://127.0.0.1:8080)
+    OKAY_TLS_SKIP_VERIFY=1      (e.g., export OKAY_TLS_SKIP_VERIFY=1)
+    Config file (~/.okay.json):  {"proxy": "http://127.0.0.1:8080", "tls_skip_verify": true}
 
 Commands:
   login              Trigger secure web browser authentication loop (recommended)
@@ -302,6 +437,12 @@ Examples:
   okay run -d ubuntu                        # Detach, print session ID
   okay run -e PORT=3000 -e DEBUG=1 -d ubuntu
   okay run -v wp_data:/var/lib/html ubuntu  # Mount a named volume
+
+MITM Proxy Examples:
+  okay --proxy http://127.0.0.1:8080 --no-proxy-verify run ubuntu
+  export OKAY_PROXY=http://127.0.0.1:8080
+  export OKAY_TLS_SKIP_VERIFY=1
+  okay run ubuntu
 `)
 }
 
@@ -312,7 +453,7 @@ func handleManualAuth(token string) {
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: Unable to connect to backend server: %v\n", err)
@@ -419,7 +560,7 @@ func handleLoginFlow() {
 		// Fetch profile to verify email
 		req, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		client := &http.Client{Timeout: 5 * time.Second}
+		client := newHTTPClient(5 * time.Second)
 		resp, err := client.Do(req)
 		if err == nil {
 			defer resp.Body.Close()
@@ -469,7 +610,7 @@ func handleBalance() {
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error connecting to server: %v\n", err)
@@ -521,7 +662,7 @@ func handlePS(all bool) {
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -571,7 +712,7 @@ func handleStop(sessionID string) {
 	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/v1/sessions/%s", APIBaseURL, sessionID), nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error stopping session: %v\n", err)
@@ -610,7 +751,7 @@ func handleSave(sessionID, name string) {
 
 	fmt.Printf("[2/2] Creating copy-on-write snapshot disk...\n\n")
 
-	client := &http.Client{Timeout: 30 * time.Second} // Snapshots can take slightly longer
+	client := newHTTPClient(30 * time.Second) // Snapshots can take slightly longer
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error communicating with server: %v\n", err)
@@ -652,7 +793,7 @@ func terminateSession(sessionID, token string) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "terminate: request failed: %v\n", err)
@@ -662,7 +803,7 @@ func terminateSession(sessionID, token string) {
 }
 
 func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, token, sessionID string, entrypoint, cmd []string) error {
-	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	dialer := newWebSocketDialer()
 	ws, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
@@ -795,7 +936,7 @@ func (r *RawOSTerminalBridge) ConnectInteractive(wsURL string, verbose bool, tok
 }
 
 func (r *RawOSTerminalBridge) ConnectInteractiveSerial(wsURL string, token, sessionID string) error {
-	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	dialer := newWebSocketDialer()
 	ws, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
@@ -857,7 +998,7 @@ func (r *RawOSTerminalBridge) ConnectInteractiveSerial(wsURL string, token, sess
 }
 
 func (r *RawOSTerminalBridge) ExecuteCommand(wsURL, commandStr string, token, sessionID string) error {
-	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	dialer := newWebSocketDialer()
 	ws, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		if resp != nil {
@@ -1169,7 +1310,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	// Make sure balance exists
 	profileReq, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 	profileReq.Header.Set("Authorization", "Bearer "+cfg.Token)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	pResp, err := client.Do(profileReq)
 	if err != nil {
 		fmt.Printf("Error connecting to server: %v\n", err)
@@ -1307,7 +1448,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
 
-	spawnClient := &http.Client{Timeout: 120 * time.Second}
+	spawnClient := newHTTPClient(120 * time.Second)
 	resp, err := spawnClient.Do(req)
 	if err != nil {
 		fmt.Printf("Error running VM: %v\n", err)
@@ -1377,7 +1518,7 @@ func handleImages() {
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/images", nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -1424,7 +1565,7 @@ func handleRMI(imageName string) {
 	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/v1/images/%s", APIBaseURL, imageName), nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -1469,7 +1610,7 @@ func handleExec(sessionID string, cmdArgs []string) {
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/v1/sessions/%s", APIBaseURL, sessionID), nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)

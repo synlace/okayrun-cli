@@ -104,7 +104,7 @@ func handleVolumeList() {
 
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/volumes", nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -158,7 +158,7 @@ func handleVolumeCreate(name, size string) {
 	req, _ := http.NewRequest("POST", APIBaseURL+"/v1/volumes", bytes.NewBuffer(body))
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newHTTPClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -188,7 +188,7 @@ func handleVolumeMount(id, path string, rw bool) {
 	// Verify volume exists
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/volumes/"+id, nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -301,7 +301,7 @@ func handleVolumeInspect(id string) {
 
 	req, _ := http.NewRequest("GET", APIBaseURL+"/v1/volumes/"+id, nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -354,7 +354,7 @@ func handleVolumeDelete(id string) {
 
 	req, _ := http.NewRequest("DELETE", APIBaseURL+"/v1/volumes/"+id, nil)
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)

@@ -145,6 +145,17 @@ type webdavClient struct {
 	username string
 	password string
 	cache    *davCache
+	httpClient *http.Client
+}
+
+func newWebDAVClient(baseURL, username, password string, cache *davCache) *webdavClient {
+	return &webdavClient{
+		baseURL:    baseURL,
+		username:   username,
+		password:   password,
+		cache:      cache,
+		httpClient: newHTTPClient(30 * time.Second),
+	}
 }
 
 func (c *webdavClient) do(method, path string, body io.Reader, headers map[string]string) (*http.Response, error) {
@@ -157,7 +168,7 @@ func (c *webdavClient) do(method, path string, body io.Reader, headers map[strin
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	return http.DefaultClient.Do(req)
+	return c.httpClient.Do(req)
 }
 
 // --- WebDAV XML types ---
@@ -195,7 +206,7 @@ type webdavFS struct {
 
 func (f *webdavFS) Root() (fs.Node, error) {
 	return &davDir{
-		client: &webdavClient{baseURL: f.baseURL, username: f.username, password: f.password, cache: f.cache},
+		client: newWebDAVClient(f.baseURL, f.username, f.password, f.cache),
 		path:   "/",
 	}, nil
 }
