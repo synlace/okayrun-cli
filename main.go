@@ -1488,7 +1488,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		}
 		fmt.Printf("⚡ MicroVM booting...\n\n")
 
-		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
+		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 		if err != nil {
 			fmt.Println(err)
@@ -1498,7 +1498,7 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		// and volumes are torn down cleanly.
 		terminateSession(s.ID, cfg.Token)
 	} else {
-		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
+		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		err = termBridge.ExecuteCommand(wsURL, strings.Join(cmdArgs, " "), cfg.Token, s.ID)
 		if err != nil {
 			fmt.Println(err)
@@ -1636,7 +1636,7 @@ func handleExec(sessionID string, cmdArgs []string) {
 		return
 	}
 
-	wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
+	wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 	
 	execCmd := cmdArgs
 	if len(execCmd) == 0 {
@@ -1644,7 +1644,7 @@ func handleExec(sessionID string, cmdArgs []string) {
 	}
 
 	if s.StackID != "" {
-		wsURL = fmt.Sprintf("%s/sessions/%s/console?token=%s&console=ssh", WSBaseURL, s.ID, cfg.Token)
+		wsURL = fmt.Sprintf("%s/sessions/%s/console?console=ssh", WSBaseURL, s.ID)
 	}
 
 	err = termBridge.ConnectInteractive(wsURL, false, cfg.Token, s.ID, nil, execCmd)

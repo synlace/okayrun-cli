@@ -371,7 +371,7 @@ func handleComposeRun(composePath string, verbose bool) {
 	for i, s := range stackResp.Sessions {
 		wg.Add(1)
 		color := logColors[i%len(logColors)]
-		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
+		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true, cfg.Token)
 	}
 
@@ -991,7 +991,7 @@ func handleComposeUp(projectName string, composePath string, subArgs []string) {
 	for i, s := range stackResp.Sessions {
 		wg.Add(1)
 		color := logColors[i%len(logColors)]
-		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
+		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, true, cfg.Token)
 	}
 
@@ -1106,7 +1106,7 @@ func handleComposeLogs(projectName string, subArgs []string) {
 	for i, s := range targetSessions {
 		wg.Add(1)
 		color := logColors[i%len(logColors)]
-		wsURL := fmt.Sprintf("%s/sessions/%s/console?token=%s", WSBaseURL, s.ID, cfg.Token)
+		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		go StreamLogs(s.ServiceName, color, wsURL, &wg, stopChan, follow, cfg.Token)
 	}
 
