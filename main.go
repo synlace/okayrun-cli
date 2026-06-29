@@ -1791,19 +1791,15 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		}
 
 		if isInteractive {
-			renderer.mu.Lock()
-			renderer.phase3Status = "running"
-			renderer.startTime = time.Now()
-			renderer.mu.Unlock()
-			renderer.Render()
-
-			// Stop the renderer BEFORE starting the SSH session
-			// so the spinner doesn't overwrite the shell output
 			renderer.Stop()
+
+			fmt.Printf("  \033[36m⠋\033[0m  Establishing interactive console bridge...\n")
 
 			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
 
+			// Move up one line and overwrite with final status
+			fmt.Printf("\033[1A\033[K")
 			if err != nil {
 				fmt.Printf("  \033[31m✗\033[0m  Failed to establish interactive console bridge\n\n")
 				fmt.Println(err)
