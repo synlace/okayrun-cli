@@ -1319,6 +1319,199 @@ func stageIcon(stage string) string {
 	}
 }
 
+type CLIRenderer struct {
+	isInteractive bool
+	linesRendered int
+	mu            sync.Mutex
+	stopChan      chan struct{}
+	wg            sync.WaitGroup
+	startTime     time.Time
+
+	phase1Status   string // "pending", "running", "success", "error"
+	phase1Elapsed  float64
+
+	phase2Status   string // "pending", "running", "success", "error"
+	phase2Elapsed  float64
+	subSteps       []SubStep
+
+	phase3Status   string // "pending", "running", "success", "error"
+	phase3Elapsed  float64
+}
+
+type SubStep struct {
+	Stage     string
+	Detail    string
+	Status    string // "running", "success"
+	Elapsed   float64
+	StartTime time.Time
+}
+
+func (r *CLIRenderer) Start() {
+	if !r.isInteractive {
+		return
+	}
+	r.startTime = time.Now()
+	r.stopChan = make(chan struct{})
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.stopChan:
+				return
+			case <-ticker.C:
+				r.mu.Lock()
+				if r.phase1Status == "running" {
+					r.phase1Elapsed = time.Since(r.startTime).Seconds()
+				}
+				if r.phase2Status == "running" {
+					for idx, sub := range r.subSteps {
+						if sub.Status == "running" {
+							r.subSteps[idx].Elapsed = time.Since(sub.StartTime).Seconds()
+						}
+					}
+					var p2Start time.Time
+					for _, sub := range r.subSteps {
+						if !sub.StartTime.IsZero() {
+							p2Start = sub.StartTime
+							break
+						}
+					}
+					if !p2Start.IsZero() {
+						r.phase2Elapsed = time.Since(p2Start).Seconds()
+					}
+				}
+				if r.phase3Status == "running" {
+					r.phase3Elapsed = time.Since(r.startTime).Seconds()
+				}
+				r.mu.Unlock()
+				r.Render()
+			}
+		}
+	}()
+}
+
+func (r *CLIRenderer) Stop() {
+	if !r.isInteractive {
+		return
+	}
+	close(r.stopChan)
+	r.wg.Wait()
+	r.Render()
+	fmt.Printf("\033[?25h") // Restore cursor
+}
+
+func (r *CLIRenderer) Render() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.isInteractive {
+		return
+	}
+
+	// Move cursor up to overwrite previous render
+	if r.linesRendered > 0 {
+		fmt.Printf("\033[%dA", r.linesRendered)
+	}
+
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	frameIdx := int(time.Since(r.startTime).Milliseconds()/80) % len(frames)
+	frame := frames[frameIdx]
+
+	var lines []string
+
+	// --- Phase 1 ---
+	if r.phase1Status == "pending" {
+		lines = append(lines, "  ○  Checking credentials & account balance...")
+	} else if r.phase1Status == "running" {
+		lines = append(lines, fmt.Sprintf("  \033[33m%s\033[0m  Checking credentials & account balance... (%.1fs)", frame, r.phase1Elapsed))
+	} else if r.phase1Status == "success" {
+		lines = append(lines, fmt.Sprintf("  \033[32m✓\033[0m  Checked credentials & account balance (%.1fs)", r.phase1Elapsed))
+	} else {
+		lines = append(lines, "  \033[31m✗\033[0m  Failed checking credentials")
+	}
+
+	// --- Phase 2 ---
+	if r.phase2Status == "pending" {
+		lines = append(lines, "  ○  Spawning dynamic microVM...")
+	} else if r.phase2Status == "running" {
+		lines = append(lines, fmt.Sprintf("  \033[34m%s\033[0m  Spawning dynamic microVM... (%.1fs)", frame, r.phase2Elapsed))
+		for _, sub := range r.subSteps {
+			var icon string
+			if sub.Status == "running" {
+				icon = frame
+			} else {
+				icon = "\033[32m✓\033[0m"
+			}
+			iconStage := subStageIcon(sub.Stage, icon)
+			lines = append(lines, fmt.Sprintf("     %s %s... (%.1fs)", iconStage, sub.Detail, sub.Elapsed))
+		}
+	} else if r.phase2Status == "success" {
+		lines = append(lines, fmt.Sprintf("  \033[32m✓\033[0m  Spawned dynamic microVM (%.1fs)", r.phase2Elapsed))
+		for _, sub := range r.subSteps {
+			lines = append(lines, fmt.Sprintf("     \033[32m✓\033[0m %s %s (%.1fs)", rawStageIcon(sub.Stage), sub.Detail, sub.Elapsed))
+		}
+	} else {
+		lines = append(lines, "  \033[31m✗\033[0m  Failed to spawn microVM")
+	}
+
+	// --- Phase 3 ---
+	if r.phase3Status == "pending" {
+		lines = append(lines, "  ○  Establishing interactive console bridge...")
+	} else if r.phase3Status == "running" {
+		lines = append(lines, fmt.Sprintf("  \033[36m%s\033[0m  Establishing interactive console bridge... (%.1fs)", frame, r.phase3Elapsed))
+	} else if r.phase3Status == "success" {
+		lines = append(lines, fmt.Sprintf("  \033[32m✓\033[0m  Established interactive console bridge (%.1fs)", r.phase3Elapsed))
+	}
+
+	// Print lines, clearing to end of line first to prevent trailing text glitches
+	for _, l := range lines {
+		fmt.Printf("\r\033[K%s\n", l)
+	}
+
+	r.linesRendered = len(lines)
+}
+
+func subStageIcon(stage, frame string) string {
+	switch stage {
+	case "queued":
+		return fmt.Sprintf("%s \033[33m⏳\033[0m", frame)
+	case "pulling":
+		return fmt.Sprintf("%s \033[36m↓\033[0m", frame)
+	case "compiling":
+		return fmt.Sprintf("%s \033[35m⚙\033[0m", frame)
+	case "provisioning":
+		return fmt.Sprintf("%s \033[34m⚡\033[0m", frame)
+	case "ready":
+		return fmt.Sprintf("%s \033[32m✓\033[0m", frame)
+	case "error":
+		return fmt.Sprintf("%s \033[31m✗\033[0m", frame)
+	default:
+		return frame
+	}
+}
+
+func rawStageIcon(stage string) string {
+	switch stage {
+	case "queued":
+		return "\033[33m⏳\033[0m"
+	case "pulling":
+		return "\033[36m↓\033[0m"
+	case "compiling":
+		return "\033[35m⚙\033[0m"
+	case "provisioning":
+		return "\033[34m⚡\033[0m"
+	case "ready":
+		return "\033[32m✓\033[0m"
+	case "error":
+		return "\033[31m✗\033[0m"
+	default:
+		return "•"
+	}
+}
+
 func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumeRefs []string) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -1328,22 +1521,37 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 
 	isInteractive := len(cmdArgs) == 0 && !detach
 
-	if isInteractive {
-		fmt.Print("\033[0m\033[?25h\n")
-		fmt.Printf("[1/3] Checking account balance and credentials...\n")
+	renderer := &CLIRenderer{
+		isInteractive: isInteractive,
+		phase1Status:  "running",
+		phase2Status:  "pending",
+		phase3Status:  "pending",
 	}
+	if isInteractive {
+		fmt.Print("\033[0m\033[?25l") // Hide cursor
+		renderer.Start()
+	}
+
 	// Make sure balance exists
 	profileReq, _ := http.NewRequest("GET", APIBaseURL+"/v1/users/me", nil)
 	profileReq.Header.Set("Authorization", "Bearer "+cfg.Token)
 	client := newHTTPClient(5 * time.Second)
 	pResp, err := client.Do(profileReq)
 	if err != nil {
+		renderer.mu.Lock()
+		renderer.phase1Status = "error"
+		renderer.mu.Unlock()
+		renderer.Stop()
 		fmt.Printf("Error connecting to server: %v\n", err)
 		return
 	}
 	defer pResp.Body.Close()
 
 	if pResp.StatusCode != http.StatusOK {
+		renderer.mu.Lock()
+		renderer.phase1Status = "error"
+		renderer.mu.Unlock()
+		renderer.Stop()
 		fmt.Println("Error: Expired session token. Please run: okay login")
 		return
 	}
@@ -1354,21 +1562,30 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	_ = json.NewDecoder(pResp.Body).Decode(&user)
 
 	if user.BalanceCents <= 0 {
+		renderer.mu.Lock()
+		renderer.phase1Status = "error"
+		renderer.mu.Unlock()
+		renderer.Stop()
 		fmt.Println("Error: Insufficient balance. Please open the web console and add credits first!")
 		fmt.Printf("Dashboard: %s\n", APIBaseURL)
 		return
 	}
 
+	renderer.mu.Lock()
+	renderer.phase1Status = "success"
+	renderer.phase1Elapsed = time.Since(renderer.startTime).Seconds()
+	renderer.phase2Status = "running"
+	renderer.mu.Unlock()
+
 	if isInteractive && !hasIPv6() {
-		fmt.Println("[1/3] Warning: No IPv6 detected on this system. okayrun.net domains are IPv6-only and may not be accessible from your connection. SSH via CLI will still work.")
+		renderer.mu.Lock()
+		// Append IPv6 warning to detail, we'll handle it after stop
+		renderer.mu.Unlock()
 	}
 
 	// Resolve volumes
 	var resolvedVolumes []map[string]string
 	if len(volumeRefs) > 0 {
-		if isInteractive {
-			fmt.Printf("[2/3] Resolving volumes...\n")
-		}
 		volumeMap := make(map[string]string) // name -> id (dedup)
 		for _, ref := range volumeRefs {
 			parts := strings.SplitN(ref, ":", 2)
@@ -1433,9 +1650,6 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		}
 	}
 
-	if isInteractive {
-		fmt.Printf("[2/3] Requesting dynamic microVM spawn... (%s rootfs overlay)\n", image)
-	}
 	payload := map[string]interface{}{
 		"image": image,
 		"name":  deriveServiceName(image),
@@ -1491,13 +1705,16 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
+				renderer.mu.Lock()
+				renderer.phase2Status = "error"
+				renderer.mu.Unlock()
+				renderer.Stop()
 				fmt.Printf("Error reading status stream: %v\n", err)
 				return
 			}
 			line = strings.TrimSpace(line)
 
 			if strings.HasPrefix(line, "event: status") {
-				// Next data line has the status JSON
 				dataLine, _ := reader.ReadString('\n')
 				dataLine = strings.TrimSpace(strings.TrimPrefix(dataLine, "data: "))
 				var status struct {
@@ -1505,12 +1722,31 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 					Detail string `json:"detail"`
 				}
 				if json.Unmarshal([]byte(dataLine), &status) == nil {
-					fmt.Printf("  %s %s\n", stageIcon(status.Stage), status.Detail)
+					renderer.mu.Lock()
+					// Mark previous active sub-steps as success
+					for idx, sub := range renderer.subSteps {
+						if sub.Status == "running" {
+							renderer.subSteps[idx].Status = "success"
+							renderer.subSteps[idx].Elapsed = time.Since(sub.StartTime).Seconds()
+						}
+					}
+					// Add new sub-step
+					renderer.subSteps = append(renderer.subSteps, SubStep{
+						Stage:     status.Stage,
+						Detail:    status.Detail,
+						Status:    "running",
+						StartTime: time.Now(),
+					})
+					renderer.mu.Unlock()
 				}
 			} else if strings.HasPrefix(line, "event: result") {
 				dataLine, _ := reader.ReadString('\n')
 				dataLine = strings.TrimSpace(strings.TrimPrefix(dataLine, "data: "))
 				if err := json.Unmarshal([]byte(dataLine), &s); err != nil {
+					renderer.mu.Lock()
+					renderer.phase2Status = "error"
+					renderer.mu.Unlock()
+					renderer.Stop()
 					fmt.Printf("Error parsing session: %v\n", err)
 					return
 				}
@@ -1522,39 +1758,72 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 					Error string `json:"error"`
 				}
 				json.Unmarshal([]byte(dataLine), &errResp)
+				renderer.mu.Lock()
+				renderer.phase2Status = "error"
+				renderer.mu.Unlock()
+				renderer.Stop()
 				fmt.Printf("Error: %s\n", errResp.Error)
 				return
 			}
 		}
 
+		// Mark all sub-steps and phase 2 as success
+		renderer.mu.Lock()
+		for idx, sub := range renderer.subSteps {
+			if sub.Status == "running" {
+				renderer.subSteps[idx].Status = "success"
+				renderer.subSteps[idx].Elapsed = time.Since(sub.StartTime).Seconds()
+			}
+		}
+		renderer.phase2Status = "success"
+		renderer.mu.Unlock()
+
 		if detach {
+			renderer.Stop()
 			fmt.Printf("%s\n", s.ID)
 			return
 		}
 
 		if isInteractive {
-			fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
-			fmt.Printf("Session ID:  %s\n", s.ID)
-			fmt.Printf("Domain:      %s\n", s.V6Domain)
-			fmt.Printf("Subnet IP:   %s\n", s.VMIPv6)
-			fmt.Printf("Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
-			fmt.Printf("Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
-			if verbose {
-				fmt.Printf("(verbose boot mode: raw console output enabled)\n\n")
-			}
-			fmt.Printf("⚡ MicroVM booting...\n\n")
+			renderer.mu.Lock()
+			renderer.phase3Status = "running"
+			renderer.startTime = time.Now()
+			renderer.mu.Unlock()
 
 			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
+
+			renderer.mu.Lock()
+			if err != nil {
+				renderer.phase3Status = "error"
+			} else {
+				renderer.phase3Status = "success"
+			}
+			renderer.phase3Elapsed = time.Since(renderer.startTime).Seconds()
+			renderer.mu.Unlock()
+			renderer.Stop()
+
 			if err != nil {
 				fmt.Println(err)
 			}
+
+			fmt.Printf("\n  Session ID:  %s\n", s.ID)
+			fmt.Printf("  Domain:      %s\n", s.V6Domain)
+			fmt.Printf("  Subnet IP:   %s\n", s.VMIPv6)
+			fmt.Printf("  Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
+			fmt.Printf("  Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
+			if verbose {
+				fmt.Printf("  (verbose boot mode: raw console output enabled)\n\n")
+			}
+			fmt.Printf("  ⚡ MicroVM booting...\n\n")
+
 			terminateSession(s.ID, cfg.Token)
 		}
 		return
 	}
 
 	// Fallback: standard JSON response (backward compatible)
+	renderer.Stop()
 	if resp.StatusCode != http.StatusCreated {
 		var errData map[string]string
 		_ = json.NewDecoder(resp.Body).Decode(&errData)
@@ -1571,16 +1840,15 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	}
 
 	if isInteractive {
-		fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
-		fmt.Printf("Session ID:  %s\n", s.ID)
-		fmt.Printf("Domain:      %s\n", s.V6Domain)
-		fmt.Printf("Subnet IP:   %s\n", s.VMIPv6)
-		fmt.Printf("Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
-		fmt.Printf("Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
+		fmt.Printf("\n  Session ID:  %s\n", s.ID)
+		fmt.Printf("  Domain:      %s\n", s.V6Domain)
+		fmt.Printf("  Subnet IP:   %s\n", s.VMIPv6)
+		fmt.Printf("  Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
+		fmt.Printf("  Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
 		if verbose {
-			fmt.Printf("(verbose boot mode: raw console output enabled)\n\n")
+			fmt.Printf("  (verbose boot mode: raw console output enabled)\n\n")
 		}
-		fmt.Printf("⚡ MicroVM booting...\n\n")
+		fmt.Printf("  ⚡ MicroVM booting...\n\n")
 
 		wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
 		err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
