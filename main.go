@@ -1463,18 +1463,20 @@ func (r *CLIRenderer) Render() {
 		lines = append(lines, "  \033[31m✗\033[0m  Failed to spawn microVM")
 	}
 
-	// --- Phase 3 ---
-	if r.phase3Status == "pending" {
-		lines = append(lines, "  ○  Establishing interactive console bridge...")
-	} else if r.phase3Status == "running" {
-		lines = append(lines, fmt.Sprintf("  \033[36m%s\033[0m  Establishing interactive console bridge... (%.1fs)", frame, r.phase3Elapsed))
-	} else if r.phase3Status == "success" {
-		lines = append(lines, fmt.Sprintf("  \033[32m✓\033[0m  Established interactive console bridge (%.1fs)", r.phase3Elapsed))
-	}
-
 	// Print lines, clearing to end of line first to prevent trailing text glitches
 	for _, l := range lines {
 		fmt.Printf("\r\033[K%s\n", l)
+	}
+
+	// Clear any remaining old lines that aren't part of the new render
+	for i := len(lines); i < r.linesRendered; i++ {
+		fmt.Printf("\r\033[K")
+		if i < r.linesRendered-1 {
+			fmt.Printf("\n")
+		}
+	}
+	if len(lines) < r.linesRendered {
+		fmt.Printf("\033[%dA", r.linesRendered-len(lines))
 	}
 
 	r.linesRendered = len(lines)
