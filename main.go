@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -1299,6 +1300,25 @@ func hasIPv6() bool {
 	return false
 }
 
+func stageIcon(stage string) string {
+	switch stage {
+	case "queued":
+		return "\033[33m⏳\033[0m"
+	case "pulling":
+		return "\033[36m↓\033[0m"
+	case "compiling":
+		return "\033[35m⚙\033[0m"
+	case "provisioning":
+		return "\033[34m⚡\033[0m"
+	case "ready":
+		return "\033[32m✓\033[0m"
+	case "error":
+		return "\033[31m✗\033[0m"
+	default:
+		return "•"
+	}
+}
+
 func handleRun(image string, cmdArgs []string, verbose bool, ports []string, memory string, cpus int, disk string, envVars []string, name string, detach bool, volumeRefs []string) {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -1452,6 +1472,9 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	req, _ := http.NewRequest("POST", APIBaseURL+"/v1/sessions", bytes.NewBuffer(body))
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
+	if isInteractive {
+		req.Header.Set("Accept", "text/event-stream")
+	}
 
 	spawnClient := newHTTPClient(120 * time.Second)
 	resp, err := spawnClient.Do(req)
@@ -1461,6 +1484,77 @@ func handleRun(image string, cmdArgs []string, verbose bool, ports []string, mem
 	}
 	defer resp.Body.Close()
 
+	// Parse SSE stream if server supports it
+	if resp.StatusCode == http.StatusOK && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		var s Session
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("Error reading status stream: %v\n", err)
+				return
+			}
+			line = strings.TrimSpace(line)
+
+			if strings.HasPrefix(line, "event: status") {
+				// Next data line has the status JSON
+				dataLine, _ := reader.ReadString('\n')
+				dataLine = strings.TrimSpace(strings.TrimPrefix(dataLine, "data: "))
+				var status struct {
+					Stage  string `json:"stage"`
+					Detail string `json:"detail"`
+				}
+				if json.Unmarshal([]byte(dataLine), &status) == nil {
+					fmt.Printf("  %s %s\n", stageIcon(status.Stage), status.Detail)
+				}
+			} else if strings.HasPrefix(line, "event: result") {
+				dataLine, _ := reader.ReadString('\n')
+				dataLine = strings.TrimSpace(strings.TrimPrefix(dataLine, "data: "))
+				if err := json.Unmarshal([]byte(dataLine), &s); err != nil {
+					fmt.Printf("Error parsing session: %v\n", err)
+					return
+				}
+				break
+			} else if strings.HasPrefix(line, "event: error") {
+				dataLine, _ := reader.ReadString('\n')
+				dataLine = strings.TrimSpace(strings.TrimPrefix(dataLine, "data: "))
+				var errResp struct {
+					Error string `json:"error"`
+				}
+				json.Unmarshal([]byte(dataLine), &errResp)
+				fmt.Printf("Error: %s\n", errResp.Error)
+				return
+			}
+		}
+
+		if detach {
+			fmt.Printf("%s\n", s.ID)
+			return
+		}
+
+		if isInteractive {
+			fmt.Printf("[3/3] Establishing interactive console bridge to virtual machine...\n\n")
+			fmt.Printf("Session ID:  %s\n", s.ID)
+			fmt.Printf("Domain:      %s\n", s.V6Domain)
+			fmt.Printf("Subnet IP:   %s\n", s.VMIPv6)
+			fmt.Printf("Billing:     $%.2f/hour + $0.01 boot, billed per second\n", calculateHourlyRate(cpus, parseMemoryMB(memory), disk)/100.0)
+			fmt.Printf("Instruction: Standard distro credentials apply. Simply run 'exit/logout' to close and stop the VM.\n\n")
+			if verbose {
+				fmt.Printf("(verbose boot mode: raw console output enabled)\n\n")
+			}
+			fmt.Printf("⚡ MicroVM booting...\n\n")
+
+			wsURL := fmt.Sprintf("%s/sessions/%s/console", WSBaseURL, s.ID)
+			err = termBridge.ConnectInteractive(wsURL, verbose, cfg.Token, s.ID, s.Entrypoint, s.Cmd)
+			if err != nil {
+				fmt.Println(err)
+			}
+			terminateSession(s.ID, cfg.Token)
+		}
+		return
+	}
+
+	// Fallback: standard JSON response (backward compatible)
 	if resp.StatusCode != http.StatusCreated {
 		var errData map[string]string
 		_ = json.NewDecoder(resp.Body).Decode(&errData)
